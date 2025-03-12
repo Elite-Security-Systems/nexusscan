@@ -17,22 +17,28 @@ fi
 # Build the project
 ./build.sh
 
-# Deploy with SAM
-echo "Deploying with SAM..."
-sam deploy \
-    --template-file template.yaml \
-    --stack-name nexusscan-stack \
-    --capabilities CAPABILITY_IAM \
-    --parameter-overrides \
-        MemorySize=1024 \
-        MaxConcurrentScans=100
+# Check if samconfig.toml exists (indicates previous guided deployment)
+if [ -f "samconfig.toml" ]; then
+    echo "Deploying with existing configuration..."
+    sam deploy
+else
+    echo "First deployment - running guided setup..."
+    sam deploy --guided
+fi
 
-# Store outputs in environment file
-echo "Storing configuration..."
-aws cloudformation describe-stacks \
-    --stack-name nexusscan-stack \
-    --query 'Stacks[0].Outputs' \
-    --output json > config.json
-
-echo "Deployment complete!"
-echo "API Endpoint: $(jq -r '.[] | select(.OutputKey == "ApiEndpoint") | .OutputValue' config.json)"
+# Store outputs in environment file if deployment was successful
+if [ $? -eq 0 ]; then
+    echo "Storing configuration..."
+    aws cloudformation describe-stacks \
+        --stack-name nexusscan-stack \
+        --query 'Stacks[0].Outputs' \
+        --output json > config.json
+    
+    echo "Deployment complete!"
+    
+    # Extract and display API endpoint
+    API_ENDPOINT=$(jq -r '.[] | select(.OutputKey == "ApiEndpoint") | .OutputValue' config.json)
+    echo "API Endpoint: $API_ENDPOINT"
+else
+    echo "Deployment failed."
+fi

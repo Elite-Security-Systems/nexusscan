@@ -9,8 +9,8 @@ Parameters:
     Description: Lambda function memory size for scanner
   MaxConcurrentScans:
     Type: Number
-    Default: 100
-    Description: Maximum concurrent scans
+    Default: 20
+    Description: Maximum concurrent scans (keep this under 100 to avoid account limits)
 
 Resources:
   # Lambda Functions
@@ -23,7 +23,6 @@ Resources:
       CodeUri: ./dist/scanner.zip
       MemorySize: !Ref MemorySize
       Timeout: 900
-      ReservedConcurrentExecutions: !Ref MaxConcurrentScans
       Environment:
         Variables:
           RESULTS_QUEUE_URL: !Ref ResultsQueue
@@ -270,7 +269,7 @@ Resources:
     Type: 'AWS::SQS::Queue'
     Properties:
       QueueName: nexusscan-results
-      VisibilityTimeout: 60
+      VisibilityTimeout: 360
       MessageRetentionPeriod: 86400 # 1 day
 
   # S3 Buckets

@@ -89,24 +89,28 @@ func (c *Client) GetAssetsByClient(ctx context.Context, clientID string) ([]mode
 
 // PutAsset stores an asset in DynamoDB
 func (c *Client) PutAsset(ctx context.Context, asset models.Asset) error {
-	// Ensure created time is set
-	if asset.CreatedAt.IsZero() {
-		asset.CreatedAt = time.Now()
-	}
-	
-	item, err := attributevalue.MarshalMap(asset)
-	if err != nil {
-		return err
-	}
-	
-	_, err = c.DynamoDB.PutItem(ctx, &dynamodb.PutItemInput{
-		TableName: aws.String("nexusscan-assets"),
-		Item:      item,
-	})
-	
-	return err
+    // Ensure created time is set
+    if asset.CreatedAt.IsZero() {
+        asset.CreatedAt = time.Now()
+    }
+    
+    // Manual mapping to ensure field names are correct
+    item := map[string]types.AttributeValue{
+        "AssetId":    &types.AttributeValueMemberS{Value: asset.ID},
+        "Name":       &types.AttributeValueMemberS{Value: asset.Name},
+        "IPAddress":  &types.AttributeValueMemberS{Value: asset.IPAddress},
+        "Type":       &types.AttributeValueMemberS{Value: asset.Type},
+        "ClientId":   &types.AttributeValueMemberS{Value: asset.ClientID},
+        "CreatedAt":  &types.AttributeValueMemberS{Value: asset.CreatedAt.Format(time.RFC3339)},
+    }
+    
+    _, err := c.DynamoDB.PutItem(ctx, &dynamodb.PutItemInput{
+        TableName: aws.String("nexusscan-assets"),
+        Item:      item,
+    })
+    
+    return err
 }
-
 // GetOpenPorts retrieves previously discovered open ports for an asset
 func (c *Client) GetOpenPorts(ctx context.Context, assetID string) ([]int, error) {
 	input := &dynamodb.GetItemInput{

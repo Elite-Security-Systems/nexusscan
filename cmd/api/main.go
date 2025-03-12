@@ -18,6 +18,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 	lambdaService "github.com/aws/aws-sdk-go-v2/service/lambda"
+	lambdaTypes "github.com/aws/aws-sdk-go-v2/service/lambda/types"
 	"github.com/Elite-Security-Systems/nexusscan/pkg/database"
 	"github.com/Elite-Security-Systems/nexusscan/pkg/models"
 )
@@ -77,7 +78,7 @@ func startScan(ctx context.Context, clientID, assetID, profileID string) (Respon
 	_, err = lambdaClient.Invoke(ctx, &lambdaService.InvokeInput{
 		FunctionName:   aws.String(schedulerFunction),
 		Payload:        payload,
-		InvocationType: lambdaService.InvocationTypeEvent, // Asynchronous invocation
+		InvocationType: lambdaTypes.InvocationTypeEvent, // Asynchronous invocation
 	})
 	
 	if err != nil {
