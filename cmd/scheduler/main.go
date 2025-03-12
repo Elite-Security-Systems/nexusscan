@@ -11,9 +11,10 @@ import (
 	"time"
 
 	"github.com/aws/aws-lambda-go/lambda"
+	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/feature/dynamodb/attributevalue"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
-	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
 	"github.com/Elite-Security-Systems/nexusscan/pkg/database"
 	"github.com/Elite-Security-Systems/nexusscan/pkg/models"
@@ -199,7 +200,7 @@ func ScheduleScan(ctx context.Context, asset models.Asset, profile models.ScanPr
 		
 		// Send to SQS
 		_, err = sqsClient.SendMessage(ctx, &sqs.SendMessageInput{
-			QueueUrl:    &tasksQueueURL,
+			QueueUrl:    aws.String(tasksQueueURL),
 			MessageBody: aws.String(string(requestJSON)),
 		})
 		

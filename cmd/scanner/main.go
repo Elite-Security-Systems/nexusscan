@@ -2,15 +2,14 @@ package main
 
 import (
 	"context"
-	"fmt"
+	"encoding/json"
 	"log"
 	"os"
-	"time"
 
 	"github.com/aws/aws-lambda-go/lambda"
+	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
-	"github.com/Elite-Security-Systems/nexusscan/pkg/database"
 	"github.com/Elite-Security-Systems/nexusscan/pkg/scanner"
 )
 
@@ -38,15 +37,23 @@ func HandleRequest(ctx context.Context, request scanner.ScanRequest) (scanner.Sc
 			} else {
 				// Send result to SQS queue
 				sqsClient := sqs.NewFromConfig(cfg)
-				_, err = sqsClient.SendMessage(ctx, &sqs.SendMessageInput{
-					QueueUrl:    &resultsQueueURL,
-					MessageBody: aws.String(string(resultJSON)),
-				})
 				
+				// Convert result to JSON
+				resultJSON, err := json.Marshal(result)
 				if err != nil {
-					log.Printf("Error sending result to SQS: %v", err)
+					log.Printf("Error marshaling result: %v", err)
 				} else {
-					log.Printf("Scan results sent to queue")
+					// Send to SQS
+					_, err = sqsClient.SendMessage(ctx, &sqs.SendMessageInput{
+						QueueUrl:    aws.String(resultsQueueURL),
+						MessageBody: aws.String(string(resultJSON)),
+					})
+					
+					if err != nil {
+						log.Printf("Error sending result to SQS: %v", err)
+					} else {
+						log.Printf("Scan results sent to queue")
+					}
 				}
 			}
 		}

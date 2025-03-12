@@ -13,7 +13,7 @@ A high-performance, serverless port scanner optimized for AWS Lambda free tier.
 
 1. Clone this repository:
    ```bash
-   git clone https://github.com/yourusername/nexusscan.git
+   git clone https://github.com/Elite-Security-Systems/nexusscan.git
    cd nexusscan
    ```
 

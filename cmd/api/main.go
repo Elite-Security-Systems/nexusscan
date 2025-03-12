@@ -7,14 +7,17 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
-	"time"
 
 	"github.com/aws/aws-lambda-go/events"
 	"github.com/aws/aws-lambda-go/lambda"
+	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
-	"github.com/aws/aws-sdk-go-v2/service/lambda"
-	lambdaTypes "github.com/aws/aws-sdk-go-v2/service/lambda/types"
+	"github.com/aws/aws-sdk-go-v2/feature/dynamodb/attributevalue"
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
+	lambdaService "github.com/aws/aws-sdk-go-v2/service/lambda"
 	"github.com/Elite-Security-Systems/nexusscan/pkg/database"
 	"github.com/Elite-Security-Systems/nexusscan/pkg/models"
 )
@@ -64,7 +67,7 @@ func startScan(ctx context.Context, clientID, assetID, profileID string) (Respon
 		event.AssetID = assetID
 	}
 	
-// Convert to JSON
+	// Convert to JSON
 	payload, err := json.Marshal(event)
 	if err != nil {
 		return errorResponse(http.StatusInternalServerError, fmt.Sprintf("Error marshaling event: %v", err))
@@ -74,7 +77,7 @@ func startScan(ctx context.Context, clientID, assetID, profileID string) (Respon
 	_, err = lambdaClient.Invoke(ctx, &lambdaService.InvokeInput{
 		FunctionName:   aws.String(schedulerFunction),
 		Payload:        payload,
-		InvocationType: lambdaTypes.InvocationTypeEvent, // Asynchronous invocation
+		InvocationType: lambdaService.InvocationTypeEvent, // Asynchronous invocation
 	})
 	
 	if err != nil {
@@ -259,27 +262,47 @@ func HandleRequest(ctx context.Context, request events.APIGatewayProxyRequest) (
 				
 				if err := json.Unmarshal([]byte(request.Body), &scanRequest); err != nil {
 					response, _ := errorResponse(http.StatusBadRequest, "Invalid request body")
-					return events.APIGatewayProxyResponse(response), nil
+					return events.APIGatewayProxyResponse{
+						StatusCode: response.StatusCode,
+						Headers:    response.Headers,
+						Body:       response.Body,
+					}, nil
 				}
 				
 				// Validate required fields
 				if scanRequest.ClientID == "" {
 					response, _ := errorResponse(http.StatusBadRequest, "ClientID is required")
-					return events.APIGatewayProxyResponse(response), nil
+					return events.APIGatewayProxyResponse{
+						StatusCode: response.StatusCode,
+						Headers:    response.Headers,
+						Body:       response.Body,
+					}, nil
 				}
 				
 				if scanRequest.ProfileID == "" {
 					response, _ := errorResponse(http.StatusBadRequest, "ProfileID is required")
-					return events.APIGatewayProxyResponse(response), nil
+					return events.APIGatewayProxyResponse{
+						StatusCode: response.StatusCode,
+						Headers:    response.Headers,
+						Body:       response.Body,
+					}, nil
 				}
 				
 				// Start scan
 				response, err := startScan(ctx, scanRequest.ClientID, scanRequest.AssetID, scanRequest.ProfileID)
 				if err != nil {
-					return events.APIGatewayProxyResponse(response), nil
+					return events.APIGatewayProxyResponse{
+						StatusCode: response.StatusCode,
+						Headers:    response.Headers,
+						Body:       response.Body,
+					}, nil
 				}
 				
-				return events.APIGatewayProxyResponse(response), nil
+				return events.APIGatewayProxyResponse{
+					StatusCode: response.StatusCode,
+					Headers:    response.Headers,
+					Body:       response.Body,
+				}, nil
 			}
 			
 		case "assets":
@@ -288,10 +311,18 @@ func HandleRequest(ctx context.Context, request events.APIGatewayProxyRequest) (
 				clientID := pathParts[2]
 				response, err := getAssets(ctx, clientID)
 				if err != nil {
-					return events.APIGatewayProxyResponse(response), nil
+					return events.APIGatewayProxyResponse{
+						StatusCode: response.StatusCode,
+						Headers:    response.Headers,
+						Body:       response.Body,
+					}, nil
 				}
 				
-				return events.APIGatewayProxyResponse(response), nil
+				return events.APIGatewayProxyResponse{
+					StatusCode: response.StatusCode,
+					Headers:    response.Headers,
+					Body:       response.Body,
+				}, nil
 			}
 			
 		case "results":
@@ -309,29 +340,49 @@ func HandleRequest(ctx context.Context, request events.APIGatewayProxyRequest) (
 				
 				response, err := getScanResults(ctx, assetID, limit)
 				if err != nil {
-					return events.APIGatewayProxyResponse(response), nil
+					return events.APIGatewayProxyResponse{
+						StatusCode: response.StatusCode,
+						Headers:    response.Headers,
+						Body:       response.Body,
+					}, nil
 				}
 				
-				return events.APIGatewayProxyResponse(response), nil
+				return events.APIGatewayProxyResponse{
+					StatusCode: response.StatusCode,
+					Headers:    response.Headers,
+					Body:       response.Body,
+				}, nil
 			}
 			
-		case "openports":
+case "openports":
 			// GET /api/openports/{assetId}
 			if request.HTTPMethod == "GET" && len(pathParts) >= 3 {
 				assetID := pathParts[2]
 				response, err := getOpenPorts(ctx, assetID)
 				if err != nil {
-					return events.APIGatewayProxyResponse(response), nil
+					return events.APIGatewayProxyResponse{
+						StatusCode: response.StatusCode,
+						Headers:    response.Headers,
+						Body:       response.Body,
+					}, nil
 				}
 				
-				return events.APIGatewayProxyResponse(response), nil
+				return events.APIGatewayProxyResponse{
+					StatusCode: response.StatusCode,
+					Headers:    response.Headers,
+					Body:       response.Body,
+				}, nil
 			}
 		}
 	}
 	
 	// If we get here, route not found
 	response, _ := errorResponse(http.StatusNotFound, "Not found")
-	return events.APIGatewayProxyResponse(response), nil
+	return events.APIGatewayProxyResponse{
+		StatusCode: response.StatusCode,
+		Headers:    response.Headers,
+		Body:       response.Body,
+	}, nil
 }
 
 func main() {

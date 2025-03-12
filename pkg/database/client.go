@@ -4,6 +4,7 @@ import (
 	"context"
 	"log"
 	"time"
+	"strconv"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
@@ -199,5 +200,5 @@ func formatDuration(d time.Duration) string {
 }
 
 func formatInt(i int) string {
-	return aws.String(string([]int{i}))
+    return strconv.Itoa(i)
 }
