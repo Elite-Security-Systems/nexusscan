@@ -1,0 +1,360 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: 'AWS::Serverless-2016-10-31'
+Description: 'NexusScan - Optimized Port Scanner for 10,000 Assets'
+
+Parameters:
+  MemorySize:
+    Type: Number
+    Default: 1024
+    Description: Lambda function memory size for scanner
+  MaxConcurrentScans:
+    Type: Number
+    Default: 100
+    Description: Maximum concurrent scans
+
+Resources:
+  # Lambda Functions
+  ScannerFunction:
+    Type: 'AWS::Serverless::Function'
+    Properties:
+      FunctionName: nexusscan-scanner
+      Handler: bootstrap
+      Runtime: provided.al2
+      CodeUri: ./dist/scanner.zip
+      MemorySize: !Ref MemorySize
+      Timeout: 900
+      ReservedConcurrentExecutions: !Ref MaxConcurrentScans
+      Environment:
+        Variables:
+          RESULTS_QUEUE_URL: !Ref ResultsQueue
+      Policies:
+        - AWSLambdaBasicExecutionRole
+        - DynamoDBCrudPolicy:
+            TableName: !Ref OpenPortsTable
+        - SQSSendMessagePolicy:
+            QueueName: !GetAtt ResultsQueue.QueueName
+
+  SchedulerFunction:
+    Type: 'AWS::Serverless::Function'
+    Properties:
+      FunctionName: nexusscan-scheduler
+      Handler: bootstrap
+      Runtime: provided.al2
+      CodeUri: ./dist/scheduler.zip
+      MemorySize: 512
+      Timeout: 300
+      Environment:
+        Variables:
+          TASKS_QUEUE_URL: !Ref TasksQueue
+          SCANNER_FUNCTION_NAME: !Ref ScannerFunction
+      Events:
+        HourlySchedule:
+          Type: Schedule
+          Properties:
+            Schedule: 'rate(1 hour)'
+            Input: '{"profileId": "hourly"}'
+        TwelveHourSchedule:
+          Type: Schedule
+          Properties:
+            Schedule: 'rate(12 hours)'
+            Input: '{"profileId": "twelve_hour"}'
+        DailySchedule:
+          Type: Schedule
+          Properties:
+            Schedule: 'rate(1 day)'
+            Input: '{"profileId": "daily"}'
+        WeeklySchedule:
+          Type: Schedule
+          Properties:
+            Schedule: 'rate(7 days)'
+            Input: '{"profileId": "weekly"}'
+      Policies:
+        - AWSLambdaBasicExecutionRole
+        - DynamoDBCrudPolicy:
+            TableName: !Ref AssetsTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref ScheduleTable
+        - SQSSendMessagePolicy:
+            QueueName: !GetAtt TasksQueue.QueueName
+        - LambdaInvokePolicy:
+            FunctionName: !Ref ScannerFunction
+
+  WorkerFunction:
+    Type: 'AWS::Serverless::Function'
+    Properties:
+      FunctionName: nexusscan-worker
+      Handler: bootstrap
+      Runtime: provided.al2
+      CodeUri: ./dist/worker.zip
+      MemorySize: 256
+      Timeout: 300
+      Environment:
+        Variables:
+          RESULTS_QUEUE_URL: !Ref ResultsQueue
+      Events:
+        SQSEvent:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt TasksQueue.Arn
+            BatchSize: 1
+      Policies:
+        - AWSLambdaBasicExecutionRole
+        - SQSSendMessagePolicy:
+            QueueName: !GetAtt ResultsQueue.QueueName
+
+  ProcessorFunction:
+    Type: 'AWS::Serverless::Function'
+    Properties:
+      FunctionName: nexusscan-processor
+      Handler: bootstrap
+      Runtime: provided.al2
+      CodeUri: ./dist/processor.zip
+      MemorySize: 512
+      Timeout: 300
+      Environment:
+        Variables:
+          RESULTS_BUCKET: !Ref ResultsBucket
+      Events:
+        SQSEvent:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt ResultsQueue.Arn
+            BatchSize: 10
+      Policies:
+        - AWSLambdaBasicExecutionRole
+        - DynamoDBCrudPolicy:
+            TableName: !Ref ResultsTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref OpenPortsTable
+        - S3CrudPolicy:
+            BucketName: !Ref ResultsBucket
+
+  ApiFunction:
+    Type: 'AWS::Serverless::Function'
+    Properties:
+      FunctionName: nexusscan-api
+      Handler: bootstrap
+      Runtime: provided.al2
+      CodeUri: ./dist/api.zip
+      MemorySize: 512
+      Timeout: 30
+      Environment:
+        Variables:
+          ASSETS_TABLE: !Ref AssetsTable
+          RESULTS_TABLE: !Ref ResultsTable
+          OPEN_PORTS_TABLE: !Ref OpenPortsTable
+          RESULTS_BUCKET: !Ref ResultsBucket
+          SCHEDULER_FUNCTION: !Ref SchedulerFunction
+      Events:
+        ApiEvent:
+          Type: Api
+          Properties:
+            RestApiId: !Ref NexusScanApi
+            Path: /{proxy+}
+            Method: ANY
+      Policies:
+        - AWSLambdaBasicExecutionRole
+        - DynamoDBCrudPolicy:
+            TableName: !Ref AssetsTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref ResultsTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref OpenPortsTable
+        - S3ReadPolicy:
+            BucketName: !Ref ResultsBucket
+        - LambdaInvokePolicy:
+            FunctionName: !Ref SchedulerFunction
+
+  # DynamoDB Tables
+  AssetsTable:
+    Type: 'AWS::DynamoDB::Table'
+    Properties:
+      TableName: nexusscan-assets
+      BillingMode: PROVISIONED
+      ProvisionedThroughput:
+        ReadCapacityUnits: 10
+        WriteCapacityUnits: 5
+      AttributeDefinitions:
+        - AttributeName: AssetId
+          AttributeType: S
+        - AttributeName: ClientId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: AssetId
+          KeyType: HASH
+      GlobalSecondaryIndexes:
+        - IndexName: ClientIndex
+          KeySchema:
+            - AttributeName: ClientId
+              KeyType: HASH
+          Projection:
+            ProjectionType: ALL
+          ProvisionedThroughput:
+            ReadCapacityUnits: 5
+            WriteCapacityUnits: 5
+
+  ResultsTable:
+    Type: 'AWS::DynamoDB::Table'
+    Properties:
+      TableName: nexusscan-results
+      BillingMode: PROVISIONED
+      ProvisionedThroughput:
+        ReadCapacityUnits: 20
+        WriteCapacityUnits: 20
+      AttributeDefinitions:
+        - AttributeName: AssetId
+          AttributeType: S
+        - AttributeName: ScanTimestamp
+          AttributeType: S
+      KeySchema:
+        - AttributeName: AssetId
+          KeyType: HASH
+        - AttributeName: ScanTimestamp
+          KeyType: RANGE
+      TimeToLiveSpecification:
+        AttributeName: ExpirationTime
+        Enabled: true
+
+  OpenPortsTable:
+    Type: 'AWS::DynamoDB::Table'
+    Properties:
+      TableName: nexusscan-open-ports
+      BillingMode: PROVISIONED
+      ProvisionedThroughput:
+        ReadCapacityUnits: 20
+        WriteCapacityUnits: 10
+      AttributeDefinitions:
+        - AttributeName: AssetId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: AssetId
+          KeyType: HASH
+
+  ScheduleTable:
+    Type: 'AWS::DynamoDB::Table'
+    Properties:
+      TableName: nexusscan-schedule
+      BillingMode: PROVISIONED
+      ProvisionedThroughput:
+        ReadCapacityUnits: 5
+        WriteCapacityUnits: 5
+      AttributeDefinitions:
+        - AttributeName: ScanProfileId
+          AttributeType: S
+        - AttributeName: NextScanTime
+          AttributeType: N
+      KeySchema:
+        - AttributeName: ScanProfileId
+          KeyType: HASH
+        - AttributeName: NextScanTime
+          KeyType: RANGE
+
+  # SQS Queues
+  TasksQueue:
+    Type: 'AWS::SQS::Queue'
+    Properties:
+      QueueName: nexusscan-tasks
+      VisibilityTimeout: 900
+      MessageRetentionPeriod: 345600 # 4 days
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt TasksDLQ.Arn
+        maxReceiveCount: 3
+
+  TasksDLQ:
+    Type: 'AWS::SQS::Queue'
+    Properties:
+      QueueName: nexusscan-tasks-dlq
+      MessageRetentionPeriod: 1209600 # 14 days
+
+  ResultsQueue:
+    Type: 'AWS::SQS::Queue'
+    Properties:
+      QueueName: nexusscan-results
+      VisibilityTimeout: 60
+      MessageRetentionPeriod: 86400 # 1 day
+
+  # S3 Buckets
+  CodeBucket:
+    Type: 'AWS::S3::Bucket'
+    Properties:
+      BucketName: !Sub 'nexusscan-code-${AWS::AccountId}'
+      VersioningConfiguration:
+        Status: Enabled
+
+  ResultsBucket:
+    Type: 'AWS::S3::Bucket'
+    Properties:
+      BucketName: !Sub 'nexusscan-results-${AWS::AccountId}'
+      LifecycleConfiguration:
+        Rules:
+          - Id: DeleteOldReports
+            Status: Enabled
+            Prefix: detailed-reports/
+            ExpirationInDays: 30
+          - Id: ArchiveOlderSummaries
+            Status: Enabled
+            Prefix: summary-reports/
+            Transitions:
+              - TransitionInDays: 30
+                StorageClass: STANDARD_IA
+            ExpirationInDays: 365
+
+  # API Gateway
+  NexusScanApi:
+    Type: 'AWS::Serverless::Api'
+    Properties:
+      StageName: prod
+      Auth:
+        DefaultAuthorizer: CognitoAuthorizer
+        Authorizers:
+          CognitoAuthorizer:
+            UserPoolArn: !GetAtt UserPool.Arn
+
+  # User Authentication
+  UserPool:
+    Type: 'AWS::Cognito::UserPool'
+    Properties:
+      UserPoolName: nexusscan-users
+      AutoVerifiedAttributes:
+        - email
+      MfaConfiguration: 'OFF'
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 8
+          RequireLowercase: true
+          RequireNumbers: true
+          RequireSymbols: true
+          RequireUppercase: true
+
+  UserPoolClient:
+    Type: 'AWS::Cognito::UserPoolClient'
+    Properties:
+      UserPoolId: !Ref UserPool
+      ClientName: nexusscan-client
+      GenerateSecret: false
+      ExplicitAuthFlows:
+        - ADMIN_NO_SRP_AUTH
+        - USER_PASSWORD_AUTH
+
+Outputs:
+  ApiEndpoint:
+    Description: "API Gateway endpoint URL"
+    Value: !Sub "https://${NexusScanApi}.execute-api.${AWS::Region}.amazonaws.com/prod/"
+  UserPoolId:
+    Description: "Cognito User Pool ID"
+    Value: !Ref UserPool
+  UserPoolClientId:
+    Description: "Cognito User Pool Client ID"
+    Value: !Ref UserPoolClient
+  TasksQueueUrl:
+    Description: "Tasks Queue URL"
+    Value: !Ref TasksQueue
+  ResultsQueueUrl:
+    Description: "Results Queue URL"
+    Value: !Ref ResultsQueue
+  ScannerFunctionName:
+    Description: "Scanner Function Name"
+    Value: !Ref ScannerFunction
+  SchedulerFunctionName:
+    Description: "Scheduler Function Name"
+    Value: !Ref SchedulerFunction
