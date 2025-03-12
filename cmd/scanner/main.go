@@ -15,8 +15,8 @@ import (
 
 func HandleRequest(ctx context.Context, request scanner.ScanRequest) (scanner.ScanResult, error) {
 	// Log request
-	log.Printf("Starting scan of %s (%s) - profile: %s, batch %d/%d, ports: %d",
-		request.AssetID, request.AssetIP, request.ScanProfile, 
+	log.Printf("Starting scan of %s - batch %d/%d, ports: %d",
+		request.IPAddress, 
 		request.BatchID+1, request.TotalBatches, len(request.PortsToScan))
 	
 	// Execute scan

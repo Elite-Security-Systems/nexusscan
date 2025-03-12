@@ -1,6 +1,8 @@
+# template.yaml
+
 AWSTemplateFormatVersion: '2010-09-09'
 Transform: 'AWS::Serverless-2016-10-31'
-Description: 'NexusScan - Optimized Port Scanner for 10,000 Assets'
+Description: 'NexusScan - IP-Based Port Scanner'
 
 Parameters:
   MemorySize:
@@ -51,28 +53,35 @@ Resources:
           Type: Schedule
           Properties:
             Schedule: 'rate(1 hour)'
-            Input: '{"profileId": "hourly"}'
+            Input: '{"scheduleType": "hourly"}'
         TwelveHourSchedule:
           Type: Schedule
           Properties:
             Schedule: 'rate(12 hours)'
-            Input: '{"profileId": "twelve_hour"}'
+            Input: '{"scheduleType": "12hour"}'
         DailySchedule:
           Type: Schedule
           Properties:
             Schedule: 'rate(1 day)'
-            Input: '{"profileId": "daily"}'
+            Input: '{"scheduleType": "daily"}'
         WeeklySchedule:
           Type: Schedule
           Properties:
             Schedule: 'rate(7 days)'
-            Input: '{"profileId": "weekly"}'
+            Input: '{"scheduleType": "weekly"}'
+        MonthlySchedule:
+          Type: Schedule
+          Properties:
+            Schedule: 'rate(30 days)'
+            Input: '{"scheduleType": "monthly"}'
       Policies:
         - AWSLambdaBasicExecutionRole
         - DynamoDBCrudPolicy:
-            TableName: !Ref AssetsTable
+            TableName: !Ref IPsTable
         - DynamoDBCrudPolicy:
-            TableName: !Ref ScheduleTable
+            TableName: !Ref SchedulesTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref OpenPortsTable
         - SQSSendMessagePolicy:
             QueueName: !GetAtt TasksQueue.QueueName
         - LambdaInvokePolicy:
@@ -139,10 +148,6 @@ Resources:
       Timeout: 30
       Environment:
         Variables:
-          ASSETS_TABLE: !Ref AssetsTable
-          RESULTS_TABLE: !Ref ResultsTable
-          OPEN_PORTS_TABLE: !Ref OpenPortsTable
-          RESULTS_BUCKET: !Ref ResultsBucket
           SCHEDULER_FUNCTION: !Ref SchedulerFunction
       Events:
         ApiEvent:
@@ -154,7 +159,9 @@ Resources:
       Policies:
         - AWSLambdaBasicExecutionRole
         - DynamoDBCrudPolicy:
-            TableName: !Ref AssetsTable
+            TableName: !Ref IPsTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref SchedulesTable
         - DynamoDBCrudPolicy:
             TableName: !Ref ResultsTable
         - DynamoDBCrudPolicy:
@@ -165,26 +172,43 @@ Resources:
             FunctionName: !Ref SchedulerFunction
 
   # DynamoDB Tables
-  AssetsTable:
+  IPsTable:
     Type: 'AWS::DynamoDB::Table'
     Properties:
-      TableName: nexusscan-assets
+      TableName: nexusscan-ips
       BillingMode: PROVISIONED
       ProvisionedThroughput:
         ReadCapacityUnits: 10
         WriteCapacityUnits: 5
       AttributeDefinitions:
-        - AttributeName: AssetId
-          AttributeType: S
-        - AttributeName: ClientId
+        - AttributeName: IPAddress
           AttributeType: S
       KeySchema:
-        - AttributeName: AssetId
+        - AttributeName: IPAddress
           KeyType: HASH
+
+  SchedulesTable:
+    Type: 'AWS::DynamoDB::Table'
+    Properties:
+      TableName: nexusscan-schedules
+      BillingMode: PROVISIONED
+      ProvisionedThroughput:
+        ReadCapacityUnits: 10
+        WriteCapacityUnits: 5
+      AttributeDefinitions:
+        - AttributeName: IPAddress
+          AttributeType: S
+        - AttributeName: ScheduleType
+          AttributeType: S
+      KeySchema:
+        - AttributeName: IPAddress
+          KeyType: HASH
+        - AttributeName: ScheduleType
+          KeyType: RANGE
       GlobalSecondaryIndexes:
-        - IndexName: ClientIndex
+        - IndexName: ScheduleTypeIndex
           KeySchema:
-            - AttributeName: ClientId
+            - AttributeName: ScheduleType
               KeyType: HASH
           Projection:
             ProjectionType: ALL
@@ -201,12 +225,12 @@ Resources:
         ReadCapacityUnits: 20
         WriteCapacityUnits: 20
       AttributeDefinitions:
-        - AttributeName: AssetId
+        - AttributeName: IPAddress
           AttributeType: S
         - AttributeName: ScanTimestamp
           AttributeType: S
       KeySchema:
-        - AttributeName: AssetId
+        - AttributeName: IPAddress
           KeyType: HASH
         - AttributeName: ScanTimestamp
           KeyType: RANGE
@@ -223,30 +247,11 @@ Resources:
         ReadCapacityUnits: 20
         WriteCapacityUnits: 10
       AttributeDefinitions:
-        - AttributeName: AssetId
+        - AttributeName: IPAddress
           AttributeType: S
       KeySchema:
-        - AttributeName: AssetId
+        - AttributeName: IPAddress
           KeyType: HASH
-
-  ScheduleTable:
-    Type: 'AWS::DynamoDB::Table'
-    Properties:
-      TableName: nexusscan-schedule
-      BillingMode: PROVISIONED
-      ProvisionedThroughput:
-        ReadCapacityUnits: 5
-        WriteCapacityUnits: 5
-      AttributeDefinitions:
-        - AttributeName: ScanProfileId
-          AttributeType: S
-        - AttributeName: NextScanTime
-          AttributeType: N
-      KeySchema:
-        - AttributeName: ScanProfileId
-          KeyType: HASH
-        - AttributeName: NextScanTime
-          KeyType: RANGE
 
   # SQS Queues
   TasksQueue:

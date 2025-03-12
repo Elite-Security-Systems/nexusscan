@@ -32,13 +32,13 @@ func HandleSQSEvent(ctx context.Context, event events.SQSEvent) error {
 			continue
 		}
 		
-		log.Printf("Processing scan for asset %s (%d ports)", 
-			request.AssetID, len(request.PortsToScan))
+		log.Printf("Processing scan for IP %s (%d ports)", 
+			request.IPAddress, len(request.PortsToScan))
 		
 		// Execute the scan
 		result, err := scanner.ScanPorts(ctx, request)
 		if err != nil {
-			log.Printf("Error scanning asset %s: %v", request.AssetID, err)
+			log.Printf("Error scanning IP %s: %v", request.IPAddress, err)
 			continue
 		}
 		
@@ -58,12 +58,14 @@ func HandleSQSEvent(ctx context.Context, event events.SQSEvent) error {
 			log.Printf("Error sending result: %v", err)
 		}
 		
-		log.Printf("Scan complete for asset %s: found %d open ports", 
-			request.AssetID, len(result.OpenPorts))
+		log.Printf("Scan complete for IP %s: found %d open ports", 
+			request.IPAddress, len(result.OpenPorts))
 	}
 	
 	return nil
 }
+
+
 
 func main() {
 	lambda.Start(HandleSQSEvent)

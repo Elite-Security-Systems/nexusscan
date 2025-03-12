@@ -6,15 +6,12 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"strconv"
-	"strings"
+	"sync"
 	"time"
 
 	"github.com/aws/aws-lambda-go/lambda"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
-	"github.com/aws/aws-sdk-go-v2/feature/dynamodb/attributevalue"
-	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
 	"github.com/Elite-Security-Systems/nexusscan/pkg/database"
 	"github.com/Elite-Security-Systems/nexusscan/pkg/models"
@@ -23,75 +20,18 @@ import (
 
 // SchedulerEvent triggers the scheduling process
 type SchedulerEvent struct {
-	ForceRun    bool   `json:"forceRun"`
-	ProfileID   string `json:"profileId"`
-	ClientID    string `json:"clientId"`
-	MaxAssets   int    `json:"maxAssets"`
-}
-
-// GetPendingScans finds assets due for scanning
-func GetPendingScans(ctx context.Context, db *database.Client, profileID string, maxAssets int) ([]models.Asset, error) {
-	// Query DynamoDB for assets
-	// This is a simplified implementation - in a real system, you would track when assets were last scanned
-	// and only return those that need scanning based on the profile interval
+	// For immediate scans of a single IP
+	Immediate bool   `json:"immediate"`
+	IP        string `json:"ip"`
+	PortSet   string `json:"portSet"`
+	Ports     []int  `json:"ports"`
 	
-	// For demonstration, we'll just get a limited set of assets
-	query := &dynamodb.ScanInput{
-		TableName: aws.String("nexusscan-assets"),
-		Limit:     aws.Int32(int32(maxAssets)),
-	}
+	// For bulk immediate scans
+	IPs []string `json:"ips"`
 	
-	result, err := db.DynamoDB.Scan(ctx, query)
-	if err != nil {
-		return nil, err
-	}
-	
-	var assets []models.Asset
-	err = attributevalue.UnmarshalListOfMaps(result.Items, &assets)
-	if err != nil {
-		return nil, err
-	}
-	
-	return assets, nil
-}
-
-// ProcessPortRanges converts port range strings to actual port lists
-func ProcessPortRanges(portRanges []string) ([]int, error) {
-	var ports []int
-	
-	for _, rangeStr := range portRanges {
-		// Check if it's a single port
-		if !strings.Contains(rangeStr, "-") {
-			port, err := strconv.Atoi(rangeStr)
-			if err != nil {
-				return nil, fmt.Errorf("invalid port: %s", rangeStr)
-			}
-			ports = append(ports, port)
-			continue
-		}
-		
-		// Process range
-		parts := strings.Split(rangeStr, "-")
-		if len(parts) != 2 {
-			return nil, fmt.Errorf("invalid port range: %s", rangeStr)
-		}
-		
-		start, err := strconv.Atoi(parts[0])
-		if err != nil {
-			return nil, fmt.Errorf("invalid start port: %s", parts[0])
-		}
-		
-		end, err := strconv.Atoi(parts[1])
-		if err != nil {
-			return nil, fmt.Errorf("invalid end port: %s", parts[1])
-		}
-		
-		for port := start; port <= end; port++ {
-			ports = append(ports, port)
-		}
-	}
-	
-	return ports, nil
+	// For scheduled scans
+	ScheduleType string `json:"scheduleType"` // hourly, 12hour, daily, weekly, monthly
+	MaxIPs       int    `json:"maxIPs"`
 }
 
 // SplitIntoBatches divides ports into batches for Lambda functions
@@ -113,16 +53,15 @@ func SplitIntoBatches(ports []int, batchSize int) [][]int {
 }
 
 // ScheduleScan prepares and dispatches scan tasks
-func ScheduleScan(ctx context.Context, asset models.Asset, profile models.ScanProfile, sqsClient *sqs.Client, db *database.Client) error {
-	// Determine ports to scan based on profile strategy
+func ScheduleScan(ctx context.Context, ipAddress string, portSet string, sqsClient *sqs.Client, db *database.Client) error {
+	// Determine ports to scan based on port set
 	var portsToScan []int
 	
-	switch profile.PortStrategy {
-	case "previous_open":
+	if portSet == "previous_open" {
 		// Get previously open ports from database
-		openPorts, err := db.GetOpenPorts(ctx, asset.ID)
+		openPorts, err := db.GetOpenPorts(ctx, ipAddress)
 		if err != nil {
-			log.Printf("Error getting open ports for asset %s: %v", asset.ID, err)
+			log.Printf("Error getting open ports for IP %s: %v", ipAddress, err)
 			openPorts = []int{} // Default to empty list
 		}
 		
@@ -132,41 +71,24 @@ func ScheduleScan(ctx context.Context, asset models.Asset, profile models.ScanPr
 		}
 		
 		portsToScan = openPorts
-		
-	case "top_ports":
-		portsToScan = models.GetOptimizedPortList("top_ports")
-		
-	case "important_ports":
-		portsToScan = models.GetOptimizedPortList("important_ports")
-		
-	case "full_range":
-		// Process port ranges from profile
-		if len(profile.PortRanges) > 0 {
-			var err error
-			portsToScan, err = ProcessPortRanges(profile.PortRanges)
-			if err != nil {
-				log.Printf("Error processing port ranges: %v", err)
-				return err
-			}
-		} else {
-			// Default to all ports
-			portsToScan = make([]int, 65535)
-			for i := 0; i < 65535; i++ {
-				portsToScan[i] = i + 1
-			}
+	} else {
+		// Get ports based on port set name
+		portsToScan = models.GetPortSet(portSet)
+		if len(portsToScan) == 0 {
+			return fmt.Errorf("invalid port set: %s", portSet)
 		}
 	}
 	
 	// Split ports into optimal batches for Lambda functions
 	batchSize := 1000 // Default batch size
-	if profile.PortStrategy == "full_range" {
+	if portSet == "full_65k" {
 		batchSize = 5000 // Larger batch size for full range scans
 	}
 	
 	batches := SplitIntoBatches(portsToScan, batchSize)
 	
 	// Create scan ID
-	scanID := fmt.Sprintf("scan-%s-%d", asset.ID, time.Now().Unix())
+	scanID := fmt.Sprintf("scan-%s-%d", ipAddress, time.Now().Unix())
 	
 	// Get queue URL
 	tasksQueueURL := os.Getenv("TASKS_QUEUE_URL")
@@ -178,17 +100,14 @@ func ScheduleScan(ctx context.Context, asset models.Asset, profile models.ScanPr
 	// Submit scan tasks to SQS
 	for i, batch := range batches {
 		request := scanner.ScanRequest{
-			AssetID:      asset.ID,
-			AssetIP:      asset.IPAddress,
-			ClientID:     asset.ClientID,
-			ScanProfile:  profile.ID,
+			IPAddress:    ipAddress,
 			PortsToScan:  batch,
 			BatchID:      i,
 			TotalBatches: len(batches),
 			ScanID:       scanID,
-			TimeoutMs:    profile.TimeoutMs,
-			Concurrency:  profile.Concurrency,
-			RetryCount:   profile.RetryCount,
+			TimeoutMs:    500, // Default timeout
+			Concurrency:  100, // Default concurrency
+			RetryCount:   2,   // Default retry count
 		}
 		
 		// Convert to JSON
@@ -209,13 +128,14 @@ func ScheduleScan(ctx context.Context, asset models.Asset, profile models.ScanPr
 			continue
 		}
 		
-		log.Printf("Scheduled scan batch %d/%d for asset %s (%s)", 
-			i+1, len(batches), asset.ID, asset.IPAddress)
+		log.Printf("Scheduled scan batch %d/%d for IP %s", 
+			i+1, len(batches), ipAddress)
 	}
 	
 	return nil
 }
 
+// HandleSchedule processes scheduler events
 func HandleSchedule(ctx context.Context, event SchedulerEvent) error {
 	// Initialize AWS clients
 	cfg, err := config.LoadDefaultConfig(ctx)
@@ -227,91 +147,131 @@ func HandleSchedule(ctx context.Context, event SchedulerEvent) error {
 	sqsClient := sqs.NewFromConfig(cfg)
 	db := database.NewClient(cfg)
 	
-	// Get scan profiles
-	profiles := models.GetDefaultScanProfiles()
-	
-	// Default max assets if not specified
-	maxAssets := event.MaxAssets
-	if maxAssets <= 0 {
-		maxAssets = 100 // Default to 100 assets per run
+	// Handle immediate scan for a single IP
+	if event.Immediate && event.IP != "" {
+		log.Printf("Immediate scan requested for IP %s with port set %s", event.IP, event.PortSet)
+		
+		// Use provided ports if available, otherwise determine from port set
+		if len(event.Ports) > 0 {
+			// Create scan ID
+			scanID := fmt.Sprintf("scan-%s-%d", event.IP, time.Now().Unix())
+			
+			// Get queue URL
+			tasksQueueURL := os.Getenv("TASKS_QUEUE_URL")
+			if tasksQueueURL == "" {
+				return fmt.Errorf("TASKS_QUEUE_URL not set")
+			}
+			
+			// Split ports into batches
+			batches := SplitIntoBatches(event.Ports, 1000)
+			
+			// Submit scan tasks to SQS
+			for i, batch := range batches {
+				request := scanner.ScanRequest{
+					IPAddress:    event.IP,
+					PortsToScan:  batch,
+					BatchID:      i,
+					TotalBatches: len(batches),
+					ScanID:       scanID,
+					TimeoutMs:    500, // Default timeout
+					Concurrency:  100, // Default concurrency
+					RetryCount:   2,   // Default retry count
+				}
+				
+				// Convert to JSON
+				requestJSON, err := json.Marshal(request)
+				if err != nil {
+					log.Printf("Error marshaling request: %v", err)
+					continue
+				}
+				
+				// Send to SQS
+				_, err = sqsClient.SendMessage(ctx, &sqs.SendMessageInput{
+					QueueUrl:    aws.String(tasksQueueURL),
+					MessageBody: aws.String(string(requestJSON)),
+				})
+				
+				if err != nil {
+					log.Printf("Error sending task to SQS: %v", err)
+					continue
+				}
+			}
+			
+			log.Printf("Immediate scan scheduled for IP %s with %d ports", 
+				event.IP, len(event.Ports))
+			
+			return nil
+		} else {
+			// Schedule scan with port set
+			return ScheduleScan(ctx, event.IP, event.PortSet, sqsClient, db)
+		}
 	}
 	
-	// If specific profile requested
-	if event.ProfileID != "" {
-		profile, exists := profiles[event.ProfileID]
-		if !exists {
-			log.Printf("Unknown profile ID: %s", event.ProfileID)
-			return fmt.Errorf("unknown profile ID: %s", event.ProfileID)
+	// Handle bulk immediate scan
+	if event.Immediate && len(event.IPs) > 0 {
+		log.Printf("Bulk immediate scan requested for %d IPs with port set %s", len(event.IPs), event.PortSet)
+		
+		var wg sync.WaitGroup
+		semaphore := make(chan struct{}, 10) // Limit concurrent scheduling
+		
+		for _, ip := range event.IPs {
+			wg.Add(1)
+			semaphore <- struct{}{} // Acquire semaphore
+			
+			go func(ipAddress string) {
+				defer wg.Done()
+				defer func() { <-semaphore }() // Release semaphore
+				
+				if err := ScheduleScan(ctx, ipAddress, event.PortSet, sqsClient, db); err != nil {
+					log.Printf("Error scheduling scan for IP %s: %v", ipAddress, err)
+				}
+			}(ip)
 		}
 		
-		log.Printf("Running %s scan profile", profile.Name)
+		wg.Wait()
+		log.Printf("Bulk scan scheduled for %d IPs", len(event.IPs))
 		
-		// Get assets to scan (with optional client filter)
-		var assets []models.Asset
-		var err error
+		return nil
+	}
+	
+	// Handle scheduled scans
+	scheduleType := event.ScheduleType
+	if scheduleType != "" {
+		// Set default max IPs if not specified
+		maxIPs := event.MaxIPs
+		if maxIPs <= 0 {
+			maxIPs = 100 // Default to 100 IPs per run
+		}
 		
-		if event.ClientID != "" {
-			// Get assets for specific client
-			assets, err = db.GetAssetsByClient(ctx, event.ClientID)
-			if err != nil {
-				log.Printf("Error getting assets for client %s: %v", event.ClientID, err)
-				return err
+		log.Printf("Running %s scheduled scans", scheduleType)
+		
+		// Get IPs due for scanning
+		scheduledScans, err := db.GetPendingScans(ctx, scheduleType, maxIPs)
+		if err != nil {
+			log.Printf("Error getting pending scans: %v", err)
+			return err
+		}
+		
+		log.Printf("Found %d IPs for %s scanning", len(scheduledScans), scheduleType)
+		
+		// Process each scheduled scan
+		for _, scheduledScan := range scheduledScans {
+			if err := ScheduleScan(ctx, scheduledScan.IPAddress, scheduledScan.PortSet, sqsClient, db); err != nil {
+				log.Printf("Error scheduling scan for IP %s: %v", scheduledScan.IPAddress, err)
+				continue
 			}
-		} else {
-			// Get all pending assets
-			assets, err = GetPendingScans(ctx, db, event.ProfileID, maxAssets)
-			if err != nil {
-				log.Printf("Error getting pending scans: %v", err)
-				return err
-			}
-		}
-		
-		// Limit assets if needed
-		if len(assets) > maxAssets {
-			assets = assets[:maxAssets]
-		}
-		
-		log.Printf("Scheduling %d assets for scanning", len(assets))
-		
-		// Schedule scans for each asset
-		for _, asset := range assets {
-			if err := ScheduleScan(ctx, asset, profile, sqsClient, db); err != nil {
-				log.Printf("Error scheduling scan for asset %s: %v", asset.ID, err)
+			
+			// Update schedule after scan
+			if err := db.UpdateScheduleAfterScan(ctx, scheduledScan.IPAddress, scheduleType); err != nil {
+				log.Printf("Error updating schedule for IP %s: %v", scheduledScan.IPAddress, err)
 			}
 		}
 		
 		return nil
 	}
 	
-	// Otherwise process all profiles
-	for _, profile := range profiles {
-		// Skip profiles not due for execution
-		// In a real system, you would check the timestamp of when this profile was last run
-		// and determine if it's time to run again based on the interval
-		
-		// Get assets to scan
-		assets, err := GetPendingScans(ctx, db, profile.ID, maxAssets)
-		if err != nil {
-			log.Printf("Error getting pending scans for profile %s: %v", profile.ID, err)
-			continue
-		}
-		
-		// Limit assets if needed
-		if len(assets) > maxAssets {
-			assets = assets[:maxAssets]
-		}
-		
-		log.Printf("Scheduling %d assets for %s scan", len(assets), profile.Name)
-		
-		// Schedule scans for each asset
-		for _, asset := range assets {
-			if err := ScheduleScan(ctx, asset, profile, sqsClient, db); err != nil {
-				log.Printf("Error scheduling scan for asset %s: %v", asset.ID, err)
-			}
-		}
-	}
-	
-	return nil
+	// If we get here, no valid operation was specified
+	return fmt.Errorf("no valid operation specified in scheduler event")
 }
 
 func main() {

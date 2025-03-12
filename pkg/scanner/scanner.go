@@ -1,3 +1,5 @@
+// pkg/scanner/scanner.go
+
 package scanner
 
 import (
@@ -15,23 +17,20 @@ import (
 
 // ScanRequest defines the input for a scan
 type ScanRequest struct {
-	AssetID      string   `json:"assetId"`
-	AssetIP      string   `json:"assetIp"`
-	ClientID     string   `json:"clientId"`
-	ScanProfile  string   `json:"scanProfile"`
-	PortsToScan  []int    `json:"portsToScan"`
-	BatchID      int      `json:"batchId"`
-	TotalBatches int      `json:"totalBatches"`
-	ScanID       string   `json:"scanId"`
-	TimeoutMs    int      `json:"timeoutMs"`
-	Concurrency  int      `json:"concurrency"`
-	RetryCount   int      `json:"retryCount"`
+	IPAddress     string   `json:"ipAddress"`
+	PortsToScan   []int    `json:"portsToScan"`
+	BatchID       int      `json:"batchId"`
+	TotalBatches  int      `json:"totalBatches"`
+	ScanID        string   `json:"scanId"`
+	TimeoutMs     int      `json:"timeoutMs"`
+	Concurrency   int      `json:"concurrency"`
+	RetryCount    int      `json:"retryCount"`
+	ScheduleType  string   `json:"scheduleType,omitempty"` // Optional, for scheduled scans
 }
 
 // ScanResult defines the scanner output
 type ScanResult struct {
-	AssetID      string        `json:"assetId"`
-	AssetIP      string        `json:"assetIp"`
+	IPAddress    string        `json:"ipAddress"`
 	ScanID       string        `json:"scanId"`
 	OpenPorts    []models.Port `json:"openPorts"`
 	ScanDuration time.Duration `json:"duration"`
@@ -39,6 +38,7 @@ type ScanResult struct {
 	TotalBatches int           `json:"totalBatches"`
 	PortsScanned int           `json:"portsScanned"`
 	ScanComplete bool          `json:"scanComplete"`
+	ScheduleType string        `json:"scheduleType,omitempty"` // Optional, for scheduled scans
 }
 
 // Initialize connection pool
@@ -123,13 +123,13 @@ func ScanPorts(ctx context.Context, request ScanRequest) (ScanResult, error) {
 	
 	// Prepare result
 	result := ScanResult{
-		AssetID:      request.AssetID,
-		AssetIP:      request.AssetIP,
+		IPAddress:    request.IPAddress,
 		ScanID:       request.ScanID,
 		BatchID:      request.BatchID,
 		TotalBatches: request.TotalBatches,
 		OpenPorts:    make([]models.Port, 0),
 		PortsScanned: len(request.PortsToScan),
+		ScheduleType: request.ScheduleType,
 	}
 	
 	// Use buffered channels for worker management
@@ -162,7 +162,7 @@ func ScanPorts(ctx context.Context, request ScanRequest) (ScanResult, error) {
 					return // Context cancelled
 				default:
 					// Scan the port
-					isOpen, latency := ScanPort(ctx, request.AssetIP, port, timeout, retryCount)
+					isOpen, latency := ScanPort(ctx, request.IPAddress, port, timeout, retryCount)
 					
 					if isOpen {
 						// Port is open, send to result channel
@@ -207,7 +207,7 @@ func ScanPorts(ctx context.Context, request ScanRequest) (ScanResult, error) {
 	
 	// Log summary
 	log.Printf("Scan of %s completed: %d ports scanned, %d open ports found in %v",
-		request.AssetIP, len(request.PortsToScan), len(result.OpenPorts), result.ScanDuration)
+		request.IPAddress, len(request.PortsToScan), len(result.OpenPorts), result.ScanDuration)
 	
 	return result, nil
 }

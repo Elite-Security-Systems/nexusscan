@@ -1,3 +1,5 @@
+// cmd/processor/main.go
+
 package main
 
 import (
@@ -38,7 +40,7 @@ func HandleSQSEvent(ctx context.Context, event events.SQSEvent) error {
 		}
 		
 		// Store scan results in DynamoDB
-		if err := db.StoreScanResult(ctx, result.AssetID, result.ScanID, result.OpenPorts, 
+		if err := db.StoreScanResult(ctx, result.IPAddress, result.ScanID, result.OpenPorts, 
 			result.ScanDuration, result.PortsScanned); err != nil {
 			log.Printf("Error storing results: %v", err)
 		}
@@ -49,9 +51,9 @@ func HandleSQSEvent(ctx context.Context, event events.SQSEvent) error {
 			openPortNumbers = append(openPortNumbers, port.Number)
 		}
 		
-		// Update open ports tracker for hourly scans
+		// Update open ports tracker
 		if len(openPortNumbers) > 0 {
-			if err := db.StoreOpenPorts(ctx, result.AssetID, openPortNumbers); err != nil {
+			if err := db.StoreOpenPorts(ctx, result.IPAddress, openPortNumbers); err != nil {
 				log.Printf("Error updating open ports: %v", err)
 			}
 		}
@@ -60,8 +62,7 @@ func HandleSQSEvent(ctx context.Context, event events.SQSEvent) error {
 		if result.BatchID == result.TotalBatches-1 && resultsBucket != "" {
 			// Deep copy the result to avoid modifying the original
 			fullResult := scanner.ScanResult{
-				AssetID:      result.AssetID,
-				AssetIP:      result.AssetIP,
+				IPAddress:    result.IPAddress,
 				ScanID:       result.ScanID,
 				OpenPorts:    result.OpenPorts,
 				ScanDuration: result.ScanDuration,
@@ -69,6 +70,7 @@ func HandleSQSEvent(ctx context.Context, event events.SQSEvent) error {
 				TotalBatches: result.TotalBatches,
 				PortsScanned: result.PortsScanned,
 				ScanComplete: result.ScanComplete,
+				ScheduleType: result.ScheduleType,
 			}
 			
 			// Convert to JSON
@@ -79,7 +81,7 @@ func HandleSQSEvent(ctx context.Context, event events.SQSEvent) error {
 			}
 			
 			// Store in S3
-			key := fmt.Sprintf("detailed-reports/%s/%s.json", result.AssetID, result.ScanID)
+			key := fmt.Sprintf("detailed-reports/%s/%s.json", result.IPAddress, result.ScanID)
 			_, err = s3Client.PutObject(ctx, &s3.PutObjectInput{
 				Bucket:      aws.String(resultsBucket),
 				Key:         aws.String(key),
@@ -92,8 +94,8 @@ func HandleSQSEvent(ctx context.Context, event events.SQSEvent) error {
 			}
 		}
 		
-		log.Printf("Processed results for asset %s (%d open ports)", 
-			result.AssetID, len(result.OpenPorts))
+		log.Printf("Processed results for IP %s (%d open ports)", 
+			result.IPAddress, len(result.OpenPorts))
 	}
 	
 	return nil
