@@ -134,6 +134,8 @@ Resources:
             TableName: !Ref ResultsTable
         - DynamoDBCrudPolicy:
             TableName: !Ref OpenPortsTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref IPsTable
         - S3CrudPolicy:
             BucketName: !Ref ResultsBucket
 

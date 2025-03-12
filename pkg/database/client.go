@@ -333,24 +333,48 @@ func (c *Client) GetOpenPorts(ctx context.Context, ipAddress string) ([]int, err
 
 // StoreOpenPorts saves open ports for an IP
 func (c *Client) StoreOpenPorts(ctx context.Context, ipAddress string, openPorts []int) error {
-	item := map[string]types.AttributeValue{
-		"IPAddress":   &types.AttributeValueMemberS{Value: ipAddress},
-		"LastUpdated": &types.AttributeValueMemberS{Value: time.Now().Format(time.RFC3339)},
-	}
-	
-	// Marshal port list
-	portsAV, err := attributevalue.Marshal(openPorts)
-	if err != nil {
-		return err
-	}
-	item["OpenPorts"] = portsAV
-	
-	_, err = c.DynamoDB.PutItem(ctx, &dynamodb.PutItemInput{
-		TableName: aws.String("nexusscan-open-ports"),
-		Item:      item,
-	})
-	
-	return err
+    // First, get the existing open ports
+    existingPorts, err := c.GetOpenPorts(ctx, ipAddress)
+    if err != nil {
+        log.Printf("Error getting existing open ports for IP %s: %v", ipAddress, err)
+        // Continue with empty list if error
+        existingPorts = []int{}
+    }
+    
+    // Merge existing ports with new ones (avoiding duplicates)
+    portsMap := make(map[int]bool)
+    for _, port := range existingPorts {
+        portsMap[port] = true
+    }
+    for _, port := range openPorts {
+        portsMap[port] = true
+    }
+    
+    // Convert back to slice
+    mergedPorts := make([]int, 0, len(portsMap))
+    for port := range portsMap {
+        mergedPorts = append(mergedPorts, port)
+    }
+
+    // Update with merged ports
+    item := map[string]types.AttributeValue{
+        "IPAddress":   &types.AttributeValueMemberS{Value: ipAddress},
+        "LastUpdated": &types.AttributeValueMemberS{Value: time.Now().Format(time.RFC3339)},
+    }
+    
+    // Marshal port list
+    portsAV, err := attributevalue.Marshal(mergedPorts)
+    if err != nil {
+        return err
+    }
+    item["OpenPorts"] = portsAV
+    
+    _, err = c.DynamoDB.PutItem(ctx, &dynamodb.PutItemInput{
+        TableName: aws.String("nexusscan-open-ports"),
+        Item:      item,
+    })
+    
+    return err
 }
 
 // StoreScanResult saves a scan result
