@@ -261,8 +261,8 @@ func HandleSchedule(ctx context.Context, event SchedulerEvent) error {
 				continue
 			}
 			
-			// Update schedule after scan
-			if err := db.UpdateScheduleAfterScan(ctx, scheduledScan.IPAddress, scheduleType); err != nil {
+			// Update schedule after scan using ScheduleID
+			if err := db.UpdateScheduleAfterScan(ctx, scheduledScan.ScheduleID, scheduleType); err != nil {
 				log.Printf("Error updating schedule for IP %s: %v", scheduledScan.IPAddress, err)
 			}
 		}
@@ -273,6 +273,7 @@ func HandleSchedule(ctx context.Context, event SchedulerEvent) error {
 	// If we get here, no valid operation was specified
 	return fmt.Errorf("no valid operation specified in scheduler event")
 }
+
 
 func main() {
 	lambda.Start(HandleSchedule)

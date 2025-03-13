@@ -11,7 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"os"
-//	"time"
+	"time"
 
 	"github.com/aws/aws-lambda-go/events"
 	"github.com/aws/aws-lambda-go/lambda"
@@ -202,126 +202,239 @@ func getIPs(ctx context.Context, limit int, offset int) (Response, error) {
 
 // addSchedule adds a scan schedule for an IP
 func addSchedule(ctx context.Context, ipAddress string, scheduleType string, portSet string, enabled bool) (Response, error) {
-	// Initialize AWS clients
-	cfg, err := config.LoadDefaultConfig(ctx)
-	if err != nil {
-		return errorResponse(http.StatusInternalServerError, fmt.Sprintf("Error loading AWS config: %v", err))
-	}
-	
-	// Create database client
-	db := database.NewClient(cfg)
-	
-	// Validate schedule type
-	switch scheduleType {
-	case "hourly", "12hour", "daily", "weekly", "monthly":
-		// Valid schedule type
-	default:
-		return errorResponse(http.StatusBadRequest, "Invalid schedule type. Must be one of: hourly, 12hour, daily, weekly, monthly")
-	}
-	
-	// Validate port set
-	switch portSet {
-	case "previous_open", "top_100", "custom_3500", "full_65k":
-		// Valid port set
-	default:
-		return errorResponse(http.StatusBadRequest, "Invalid port set. Must be one of: previous_open, top_100, custom_3500, full_65k")
-	}
-	
-	// Add schedule to database
-	if err := db.AddSchedule(ctx, ipAddress, scheduleType, portSet, enabled); err != nil {
-		return errorResponse(http.StatusInternalServerError, fmt.Sprintf("Error adding schedule: %v", err))
-	}
-	
-	// Create success response
-	response := struct {
-		Message      string `json:"message"`
-		IP           string `json:"ip"`
-		ScheduleType string `json:"scheduleType"`
-		PortSet      string `json:"portSet"`
-		Enabled      bool   `json:"enabled"`
-	}{
-		Message:      "Schedule added successfully",
-		IP:           ipAddress,
-		ScheduleType: scheduleType,
-		PortSet:      portSet,
-		Enabled:      enabled,
-	}
-	
-	responseJSON, _ := json.Marshal(response)
-	
-	return Response{
-		StatusCode: http.StatusOK,
-		Headers:    map[string]string{"Content-Type": "application/json"},
-		Body:       string(responseJSON),
-	}, nil
+    // Initialize AWS clients
+    cfg, err := config.LoadDefaultConfig(ctx)
+    if err != nil {
+        return errorResponse(http.StatusInternalServerError, fmt.Sprintf("Error loading AWS config: %v", err))
+    }
+    
+    // Create database client
+    db := database.NewClient(cfg)
+    
+    // Validate schedule type
+    switch scheduleType {
+    case "hourly", "12hour", "daily", "weekly", "monthly":
+        // Valid schedule type
+    default:
+        return errorResponse(http.StatusBadRequest, "Invalid schedule type. Must be one of: hourly, 12hour, daily, weekly, monthly")
+    }
+    
+    // Validate port set
+    switch portSet {
+    case "previous_open", "top_100", "custom_3500", "full_65k":
+        // Valid port set
+    default:
+        return errorResponse(http.StatusBadRequest, "Invalid port set. Must be one of: previous_open, top_100, custom_3500, full_65k")
+    }
+    
+    // Add schedule to database
+    scheduleID, err := db.AddSchedule(ctx, ipAddress, scheduleType, portSet, enabled)
+    if err != nil {
+        return errorResponse(http.StatusInternalServerError, fmt.Sprintf("Error adding schedule: %v", err))
+    }
+    
+    // Create success response
+    response := struct {
+        Message      string `json:"message"`
+        ScheduleID   string `json:"scheduleId"`
+        IP           string `json:"ip"`
+        ScheduleType string `json:"scheduleType"`
+        PortSet      string `json:"portSet"`
+        Enabled      bool   `json:"enabled"`
+    }{
+        Message:      "Schedule added successfully",
+        ScheduleID:   scheduleID,
+        IP:           ipAddress,
+        ScheduleType: scheduleType,
+        PortSet:      portSet,
+        Enabled:      enabled,
+    }
+    
+    responseJSON, _ := json.Marshal(response)
+    
+    return Response{
+        StatusCode: http.StatusOK,
+        Headers:    map[string]string{"Content-Type": "application/json"},
+        Body:       string(responseJSON),
+    }, nil
+}
+
+// updateScheduleStatus enables or disables a schedule
+func updateScheduleStatus(ctx context.Context, scheduleID string, enabled bool) (Response, error) {
+    // Initialize AWS clients
+    cfg, err := config.LoadDefaultConfig(ctx)
+    if err != nil {
+        return errorResponse(http.StatusInternalServerError, fmt.Sprintf("Error loading AWS config: %v", err))
+    }
+    
+    // Create database client
+    db := database.NewClient(cfg)
+    
+    // Get the schedule first to include in the response
+    schedule, err := db.GetScheduleByID(ctx, scheduleID)
+    if err != nil {
+        return errorResponse(http.StatusNotFound, fmt.Sprintf("Schedule not found: %v", err))
+    }
+    
+    // Update schedule status
+    if err := db.UpdateScheduleStatus(ctx, scheduleID, enabled); err != nil {
+        return errorResponse(http.StatusInternalServerError, fmt.Sprintf("Error updating schedule status: %v", err))
+    }
+    
+    // Create success response
+    response := struct {
+        Message      string `json:"message"`
+        ScheduleID   string `json:"scheduleId"`
+        IP           string `json:"ip"`
+        ScheduleType string `json:"scheduleType"`
+        Enabled      bool   `json:"enabled"`
+    }{
+        Message:      fmt.Sprintf("Schedule %s", func() string {
+            if enabled {
+                return "enabled"
+            }
+            return "disabled"
+        }()),
+        ScheduleID:   scheduleID,
+        IP:           schedule.IPAddress,
+        ScheduleType: schedule.ScheduleType,
+        Enabled:      enabled,
+    }
+    
+    responseJSON, _ := json.Marshal(response)
+    
+    return Response{
+        StatusCode: http.StatusOK,
+        Headers:    map[string]string{"Content-Type": "application/json"},
+        Body:       string(responseJSON),
+    }, nil
+}
+
+// getScheduleByID retrieves a schedule by its ID
+func getScheduleByID(ctx context.Context, scheduleID string) (Response, error) {
+    // Initialize AWS clients
+    cfg, err := config.LoadDefaultConfig(ctx)
+    if err != nil {
+        return errorResponse(http.StatusInternalServerError, fmt.Sprintf("Error loading AWS config: %v", err))
+    }
+    
+    // Create database client
+    db := database.NewClient(cfg)
+    
+    // Get schedule by ID
+    schedule, err := db.GetScheduleByID(ctx, scheduleID)
+    if err != nil {
+        return errorResponse(http.StatusNotFound, fmt.Sprintf("Schedule not found: %v", err))
+    }
+    
+    // Convert dates to RFC3339 format for consistent JSON response
+    response := struct {
+        ScheduleID   string `json:"scheduleId"`
+        IPAddress    string `json:"ipAddress"`
+        ScheduleType string `json:"scheduleType"`
+        PortSet      string `json:"portSet"`
+        Enabled      bool   `json:"enabled"`
+        CreatedAt    string `json:"createdAt"`
+        UpdatedAt    string `json:"updatedAt"`
+        LastRun      string `json:"lastRun,omitempty"`
+        NextRun      string `json:"nextRun"`
+    }{
+        ScheduleID:   schedule.ScheduleID,
+        IPAddress:    schedule.IPAddress,
+        ScheduleType: schedule.ScheduleType,
+        PortSet:      schedule.PortSet,
+        Enabled:      schedule.Enabled,
+        CreatedAt:    schedule.CreatedAt.Format(time.RFC3339),
+        UpdatedAt:    schedule.UpdatedAt.Format(time.RFC3339),
+        NextRun:      schedule.NextRun.Format(time.RFC3339),
+    }
+    
+    // Only include LastRun if it's not zero
+    if !schedule.LastRun.IsZero() {
+        response.LastRun = schedule.LastRun.Format(time.RFC3339)
+    }
+    
+    responseJSON, _ := json.Marshal(response)
+    
+    return Response{
+        StatusCode: http.StatusOK,
+        Headers:    map[string]string{"Content-Type": "application/json"},
+        Body:       string(responseJSON),
+    }, nil
 }
 
 // addSchedules adds scan schedules for multiple IPs
+// addSchedules adds scan schedules for multiple IPs
 func addSchedules(ctx context.Context, ips []string, scheduleType string, portSet string, enabled bool) (Response, error) {
-	// Initialize AWS clients
-	cfg, err := config.LoadDefaultConfig(ctx)
-	if err != nil {
-		return errorResponse(http.StatusInternalServerError, fmt.Sprintf("Error loading AWS config: %v", err))
-	}
-	
-	// Create database client
-	db := database.NewClient(cfg)
-	
-	// Validate schedule type
-	switch scheduleType {
-	case "hourly", "12hour", "daily", "weekly", "monthly":
-		// Valid schedule type
-	default:
-		return errorResponse(http.StatusBadRequest, "Invalid schedule type. Must be one of: hourly, 12hour, daily, weekly, monthly")
-	}
-	
-	// Validate port set
-	switch portSet {
-	case "previous_open", "top_100", "custom_3500", "full_65k":
-		// Valid port set
-	default:
-		return errorResponse(http.StatusBadRequest, "Invalid port set. Must be one of: previous_open, top_100, custom_3500, full_65k")
-	}
-	
-	// Add schedule for each IP
-	var addedIPs []string
-	var failedIPs []string
-	
-	for _, ip := range ips {
-		if err := db.AddSchedule(ctx, ip, scheduleType, portSet, enabled); err != nil {
-			log.Printf("Error adding schedule for IP %s: %v", ip, err)
-			failedIPs = append(failedIPs, ip)
-		} else {
-			addedIPs = append(addedIPs, ip)
-		}
-	}
-	
-	// Create response
-	response := struct {
-		Message      string   `json:"message"`
-		AddedIPs     []string `json:"addedIPs"`
-		FailedIPs    []string `json:"failedIPs,omitempty"`
-		Total        int      `json:"total"`
-		ScheduleType string   `json:"scheduleType"`
-		PortSet      string   `json:"portSet"`
-		Enabled      bool     `json:"enabled"`
-	}{
-		Message:      fmt.Sprintf("Added schedule for %d out of %d IPs", len(addedIPs), len(ips)),
-		AddedIPs:     addedIPs,
-		FailedIPs:    failedIPs,
-		Total:        len(addedIPs),
-		ScheduleType: scheduleType,
-		PortSet:      portSet,
-		Enabled:      enabled,
-	}
-	
-	responseJSON, _ := json.Marshal(response)
-	
-	return Response{
-		StatusCode: http.StatusOK,
-		Headers:    map[string]string{"Content-Type": "application/json"},
-		Body:       string(responseJSON),
-	}, nil
+    // Initialize AWS clients
+    cfg, err := config.LoadDefaultConfig(ctx)
+    if err != nil {
+        return errorResponse(http.StatusInternalServerError, fmt.Sprintf("Error loading AWS config: %v", err))
+    }
+    
+    // Create database client
+    db := database.NewClient(cfg)
+    
+    // Validate schedule type
+    switch scheduleType {
+    case "hourly", "12hour", "daily", "weekly", "monthly":
+        // Valid schedule type
+    default:
+        return errorResponse(http.StatusBadRequest, "Invalid schedule type. Must be one of: hourly, 12hour, daily, weekly, monthly")
+    }
+    
+    // Validate port set
+    switch portSet {
+    case "previous_open", "top_100", "custom_3500", "full_65k":
+        // Valid port set
+    default:
+        return errorResponse(http.StatusBadRequest, "Invalid port set. Must be one of: previous_open, top_100, custom_3500, full_65k")
+    }
+    
+    // Add schedule for each IP
+    var addedIPs []string
+    var failedIPs []string
+    var scheduleIDs []string
+    
+    for _, ip := range ips {
+        scheduleID, err := db.AddSchedule(ctx, ip, scheduleType, portSet, enabled)
+        if err != nil {
+            log.Printf("Error adding schedule for IP %s: %v", ip, err)
+            failedIPs = append(failedIPs, ip)
+        } else {
+            addedIPs = append(addedIPs, ip)
+            scheduleIDs = append(scheduleIDs, scheduleID)
+        }
+    }
+    
+    // Create response
+    response := struct {
+        Message      string   `json:"message"`
+        AddedIPs     []string `json:"addedIPs"`
+        ScheduleIDs  []string `json:"scheduleIds"`
+        FailedIPs    []string `json:"failedIPs,omitempty"`
+        Total        int      `json:"total"`
+        ScheduleType string   `json:"scheduleType"`
+        PortSet      string   `json:"portSet"`
+        Enabled      bool     `json:"enabled"`
+    }{
+        Message:      fmt.Sprintf("Added schedule for %d out of %d IPs", len(addedIPs), len(ips)),
+        AddedIPs:     addedIPs,
+        ScheduleIDs:  scheduleIDs,
+        FailedIPs:    failedIPs,
+        Total:        len(addedIPs),
+        ScheduleType: scheduleType,
+        PortSet:      portSet,
+        Enabled:      enabled,
+    }
+    
+    responseJSON, _ := json.Marshal(response)
+    
+    return Response{
+        StatusCode: http.StatusOK,
+        Headers:    map[string]string{"Content-Type": "application/json"},
+        Body:       string(responseJSON),
+    }, nil
 }
 
 // getSchedules retrieves all schedules for an IP
@@ -362,82 +475,93 @@ func getSchedules(ctx context.Context, ipAddress string) (Response, error) {
 }
 
 // updateScheduleStatus enables or disables a schedule
-func updateScheduleStatus(ctx context.Context, ipAddress string, scheduleType string, enabled bool) (Response, error) {
-	// Initialize AWS clients
-	cfg, err := config.LoadDefaultConfig(ctx)
-	if err != nil {
-		return errorResponse(http.StatusInternalServerError, fmt.Sprintf("Error loading AWS config: %v", err))
-	}
-	
-	// Create database client
-	db := database.NewClient(cfg)
-	
-	// Update schedule status
-	if err := db.UpdateScheduleStatus(ctx, ipAddress, scheduleType, enabled); err != nil {
-		return errorResponse(http.StatusInternalServerError, fmt.Sprintf("Error updating schedule status: %v", err))
-	}
-	
-	// Create success response
-	response := struct {
-		Message      string `json:"message"`
-		IP           string `json:"ip"`
-		ScheduleType string `json:"scheduleType"`
-		Enabled      bool   `json:"enabled"`
-	}{
-		Message:      fmt.Sprintf("Schedule %s", func() string {
-		    if enabled {
-		        return "enabled"
-		    }
-		    return "disabled"
-		}()),
-		IP:           ipAddress,
-		ScheduleType: scheduleType,
-		Enabled:      enabled,
-	}
-	
-	responseJSON, _ := json.Marshal(response)
-	
-	return Response{
-		StatusCode: http.StatusOK,
-		Headers:    map[string]string{"Content-Type": "application/json"},
-		Body:       string(responseJSON),
-	}, nil
+func updateSchedule(ctx context.Context, scheduleID string, scheduleType string, portSet string, enabled bool) (Response, error) {
+    // Initialize AWS clients
+    cfg, err := config.LoadDefaultConfig(ctx)
+    if err != nil {
+        return errorResponse(http.StatusInternalServerError, fmt.Sprintf("Error loading AWS config: %v", err))
+    }
+    
+    // Create database client
+    db := database.NewClient(cfg)
+    
+    // Validate schedule type
+    switch scheduleType {
+    case "hourly", "12hour", "daily", "weekly", "monthly":
+        // Valid schedule type
+    default:
+        return errorResponse(http.StatusBadRequest, "Invalid schedule type. Must be one of: hourly, 12hour, daily, weekly, monthly")
+    }
+    
+    // Validate port set
+    switch portSet {
+    case "previous_open", "top_100", "custom_3500", "full_65k":
+        // Valid port set
+    default:
+        return errorResponse(http.StatusBadRequest, "Invalid port set. Must be one of: previous_open, top_100, custom_3500, full_65k")
+    }
+    
+    // Update schedule in database
+    if err := db.UpdateSchedule(ctx, scheduleID, scheduleType, portSet, enabled); err != nil {
+        return errorResponse(http.StatusInternalServerError, fmt.Sprintf("Error updating schedule: %v", err))
+    }
+    
+    // Create success response
+    response := struct {
+        Message      string `json:"message"`
+        ScheduleID   string `json:"scheduleId"`
+        ScheduleType string `json:"scheduleType"`
+        PortSet      string `json:"portSet"`
+        Enabled      bool   `json:"enabled"`
+    }{
+        Message:      "Schedule updated successfully",
+        ScheduleID:   scheduleID,
+        ScheduleType: scheduleType,
+        PortSet:      portSet,
+        Enabled:      enabled,
+    }
+    
+    responseJSON, _ := json.Marshal(response)
+    
+    return Response{
+        StatusCode: http.StatusOK,
+        Headers:    map[string]string{"Content-Type": "application/json"},
+        Body:       string(responseJSON),
+    }, nil
 }
 
 // deleteSchedule removes a schedule
-func deleteSchedule(ctx context.Context, ipAddress string, scheduleType string) (Response, error) {
-	// Initialize AWS clients
-	cfg, err := config.LoadDefaultConfig(ctx)
-	if err != nil {
-		return errorResponse(http.StatusInternalServerError, fmt.Sprintf("Error loading AWS config: %v", err))
-	}
-	
-	// Create database client
-	db := database.NewClient(cfg)
-	
-	// Delete schedule
-	if err := db.DeleteSchedule(ctx, ipAddress, scheduleType); err != nil {
-		return errorResponse(http.StatusInternalServerError, fmt.Sprintf("Error deleting schedule: %v", err))
-	}
-	
-	// Create success response
-	response := struct {
-		Message      string `json:"message"`
-		IP           string `json:"ip"`
-		ScheduleType string `json:"scheduleType"`
-	}{
-		Message:      "Schedule deleted successfully",
-		IP:           ipAddress,
-		ScheduleType: scheduleType,
-	}
-	
-	responseJSON, _ := json.Marshal(response)
-	
-	return Response{
-		StatusCode: http.StatusOK,
-		Headers:    map[string]string{"Content-Type": "application/json"},
-		Body:       string(responseJSON),
-	}, nil
+func deleteSchedule(ctx context.Context, scheduleID string) (Response, error) {
+    // Initialize AWS clients
+    cfg, err := config.LoadDefaultConfig(ctx)
+    if err != nil {
+        return errorResponse(http.StatusInternalServerError, fmt.Sprintf("Error loading AWS config: %v", err))
+    }
+    
+    // Create database client
+    db := database.NewClient(cfg)
+    
+    // Delete schedule
+    if err := db.DeleteSchedule(ctx, scheduleID); err != nil {
+        return errorResponse(http.StatusInternalServerError, fmt.Sprintf("Error deleting schedule: %v", err))
+    }
+    
+    // Create success response
+    response := struct {
+        Message    string `json:"message"`
+        ScheduleID string `json:"scheduleId"`
+    }{
+        Message:    "Schedule deleted successfully",
+        ScheduleID: scheduleID,
+    }
+    
+    responseJSON, _ := json.Marshal(response)
+    
+    return Response{
+        StatusCode: http.StatusOK,
+        Headers:    map[string]string{"Content-Type": "application/json"},
+        Body:       string(responseJSON),
+    }, nil
 }
 
 // Scan Management Endpoints
@@ -939,12 +1063,14 @@ func HandleRequest(ctx context.Context, request events.APIGatewayProxyRequest) (
 				}, nil
 			}
 			
-			// DELETE /api/schedule
-			if request.HTTPMethod == "DELETE" {
+			// PUT /api/schedule (Update existing schedule)
+			if request.HTTPMethod == "PUT" {
 				// Parse request body
 				var scheduleRequest struct {
-					IP           string `json:"ip"`
+					ScheduleID   string `json:"scheduleId"`
 					ScheduleType string `json:"scheduleType"`
+					PortSet      string `json:"portSet"`
+					Enabled      bool   `json:"enabled"`
 				}
 				
 				if err := json.Unmarshal([]byte(request.Body), &scheduleRequest); err != nil {
@@ -957,8 +1083,8 @@ func HandleRequest(ctx context.Context, request events.APIGatewayProxyRequest) (
 				}
 				
 				// Validate required fields
-				if scheduleRequest.IP == "" {
-					response, _ := errorResponse(http.StatusBadRequest, "IP address is required")
+				if scheduleRequest.ScheduleID == "" {
+					response, _ := errorResponse(http.StatusBadRequest, "Schedule ID is required")
 					return events.APIGatewayProxyResponse{
 						StatusCode: response.StatusCode,
 						Headers:    response.Headers,
@@ -975,8 +1101,61 @@ func HandleRequest(ctx context.Context, request events.APIGatewayProxyRequest) (
 					}, nil
 				}
 				
+				if scheduleRequest.PortSet == "" {
+					response, _ := errorResponse(http.StatusBadRequest, "Port set is required")
+					return events.APIGatewayProxyResponse{
+						StatusCode: response.StatusCode,
+						Headers:    response.Headers,
+						Body:       response.Body,
+					}, nil
+				}
+				
+				// Update schedule
+				response, err := updateSchedule(ctx, scheduleRequest.ScheduleID, scheduleRequest.ScheduleType, 
+										  scheduleRequest.PortSet, scheduleRequest.Enabled)
+				if err != nil {
+					return events.APIGatewayProxyResponse{
+						StatusCode: response.StatusCode,
+						Headers:    response.Headers,
+						Body:       response.Body,
+					}, nil
+				}
+				
+				return events.APIGatewayProxyResponse{
+					StatusCode: response.StatusCode,
+					Headers:    response.Headers,
+					Body:       response.Body,
+				}, nil
+			}
+			
+			// DELETE /api/schedule
+			if request.HTTPMethod == "DELETE" {
+				// Parse request body
+				var scheduleRequest struct {
+					ScheduleID string `json:"scheduleId"`
+				}
+				
+				if err := json.Unmarshal([]byte(request.Body), &scheduleRequest); err != nil {
+					response, _ := errorResponse(http.StatusBadRequest, "Invalid request body")
+					return events.APIGatewayProxyResponse{
+						StatusCode: response.StatusCode,
+						Headers:    response.Headers,
+						Body:       response.Body,
+					}, nil
+				}
+				
+				// Validate required fields
+				if scheduleRequest.ScheduleID == "" {
+					response, _ := errorResponse(http.StatusBadRequest, "Schedule ID is required")
+					return events.APIGatewayProxyResponse{
+						StatusCode: response.StatusCode,
+						Headers:    response.Headers,
+						Body:       response.Body,
+					}, nil
+				}
+				
 				// Delete schedule
-				response, err := deleteSchedule(ctx, scheduleRequest.IP, scheduleRequest.ScheduleType)
+				response, err := deleteSchedule(ctx, scheduleRequest.ScheduleID)
 				if err != nil {
 					return events.APIGatewayProxyResponse{
 						StatusCode: response.StatusCode,
@@ -1083,9 +1262,8 @@ func HandleRequest(ctx context.Context, request events.APIGatewayProxyRequest) (
 			if request.HTTPMethod == "PUT" {
 				// Parse request body
 				var statusRequest struct {
-					IP           string `json:"ip"`
-					ScheduleType string `json:"scheduleType"`
-					Enabled      bool   `json:"enabled"`
+					ScheduleID string `json:"scheduleId"`
+					Enabled    bool   `json:"enabled"`
 				}
 				
 				if err := json.Unmarshal([]byte(request.Body), &statusRequest); err != nil {
@@ -1098,17 +1276,8 @@ func HandleRequest(ctx context.Context, request events.APIGatewayProxyRequest) (
 				}
 				
 				// Validate required fields
-				if statusRequest.IP == "" {
-					response, _ := errorResponse(http.StatusBadRequest, "IP address is required")
-					return events.APIGatewayProxyResponse{
-						StatusCode: response.StatusCode,
-						Headers:    response.Headers,
-						Body:       response.Body,
-					}, nil
-				}
-				
-				if statusRequest.ScheduleType == "" {
-					response, _ := errorResponse(http.StatusBadRequest, "Schedule type is required")
+				if statusRequest.ScheduleID == "" {
+					response, _ := errorResponse(http.StatusBadRequest, "Schedule ID is required")
 					return events.APIGatewayProxyResponse{
 						StatusCode: response.StatusCode,
 						Headers:    response.Headers,
@@ -1117,7 +1286,7 @@ func HandleRequest(ctx context.Context, request events.APIGatewayProxyRequest) (
 				}
 				
 				// Update schedule status
-				response, err := updateScheduleStatus(ctx, statusRequest.IP, statusRequest.ScheduleType, statusRequest.Enabled)
+				response, err := updateScheduleStatus(ctx, statusRequest.ScheduleID, statusRequest.Enabled)
 				if err != nil {
 					return events.APIGatewayProxyResponse{
 						StatusCode: response.StatusCode,
@@ -1281,6 +1450,29 @@ func HandleRequest(ctx context.Context, request events.APIGatewayProxyRequest) (
 				
 				// Get open ports
 				response, err := getOpenPorts(ctx, ipAddress)
+				if err != nil {
+					return events.APIGatewayProxyResponse{
+						StatusCode: response.StatusCode,
+						Headers:    response.Headers,
+						Body:       response.Body,
+					}, nil
+				}
+				
+				return events.APIGatewayProxyResponse{
+					StatusCode: response.StatusCode,
+					Headers:    response.Headers,
+					Body:       response.Body,
+				}, nil
+			}
+			
+		// Add a new endpoint to get a schedule by ID
+		case "schedule-detail":
+			// GET /api/schedule-detail/{scheduleId}
+			if request.HTTPMethod == "GET" && len(pathParts) >= 3 {
+				scheduleID := pathParts[2]
+				
+				// Get schedule by ID
+				response, err := getScheduleByID(ctx, scheduleID)
 				if err != nil {
 					return events.APIGatewayProxyResponse{
 						StatusCode: response.StatusCode,

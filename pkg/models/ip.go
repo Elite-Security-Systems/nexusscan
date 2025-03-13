@@ -13,22 +13,23 @@ type IP struct {
 
 // Schedule represents a scan schedule for an IP address
 type Schedule struct {
-	IPAddress    string    `json:"ipAddress" dynamodbav:"IPAddress"`
-	ScheduleType string    `json:"scheduleType" dynamodbav:"ScheduleType"` // hourly, 12hour, daily, weekly, monthly
-	PortSet      string    `json:"portSet" dynamodbav:"PortSet"`           // previous_open, top_100, custom_3500, full_65k
-	Enabled      bool      `json:"enabled" dynamodbav:"Enabled"`
-	CreatedAt    time.Time `json:"createdAt" dynamodbav:"CreatedAt"`
-	UpdatedAt    time.Time `json:"updatedAt" dynamodbav:"UpdatedAt"`
-	LastRun      time.Time `json:"lastRun,omitempty" dynamodbav:"LastRun,omitempty"`
-	NextRun      time.Time `json:"nextRun" dynamodbav:"NextRun"`
+    ScheduleID    string    `json:"scheduleId" dynamodbav:"ScheduleID"`     // New primary key
+    IPAddress     string    `json:"ipAddress" dynamodbav:"IPAddress"`
+    ScheduleType  string    `json:"scheduleType" dynamodbav:"ScheduleType"` // hourly, 12hour, daily, weekly, monthly
+    PortSet       string    `json:"portSet" dynamodbav:"PortSet"`           // previous_open, top_100, custom_3500, full_65k
+    Enabled       bool      `json:"enabled" dynamodbav:"Enabled"`
+    CreatedAt     time.Time `json:"createdAt" dynamodbav:"CreatedAt"`
+    UpdatedAt     time.Time `json:"updatedAt" dynamodbav:"UpdatedAt"`
+    LastRun       time.Time `json:"lastRun,omitempty" dynamodbav:"LastRun,omitempty"`
+    NextRun       time.Time `json:"nextRun" dynamodbav:"NextRun"`
 }
-
 // ScheduleScan represents a pending scan from a schedule
 type ScheduleScan struct {
-	IPAddress    string    `json:"ipAddress" dynamodbav:"IPAddress"`
-	ScheduleType string    `json:"scheduleType" dynamodbav:"ScheduleType"`
-	PortSet      string    `json:"portSet" dynamodbav:"PortSet"`
-	NextRun      time.Time `json:"nextRun" dynamodbav:"NextRun"`
+    ScheduleID    string    `json:"scheduleId" dynamodbav:"ScheduleID"`    // Add this field
+    IPAddress     string    `json:"ipAddress" dynamodbav:"IPAddress"`
+    ScheduleType  string    `json:"scheduleType" dynamodbav:"ScheduleType"`
+    PortSet       string    `json:"portSet" dynamodbav:"PortSet"`
+    NextRun       time.Time `json:"nextRun" dynamodbav:"NextRun"`
 }
 
 // ScanResult represents the results of a completed scan

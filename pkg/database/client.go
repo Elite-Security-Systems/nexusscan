@@ -6,6 +6,7 @@ import (
 	"context"
 	"log"
 	"strconv"
+	"fmt"
 	"time"
 	"encoding/json"
 
@@ -15,6 +16,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 	"github.com/Elite-Security-Systems/nexusscan/pkg/models"
+	"github.com/google/uuid"
 )
 
 // Client wraps DynamoDB client with utility methods
@@ -140,32 +142,8 @@ func (c *Client) DeleteIP(ctx context.Context, ipAddress string) error {
     }
     
     // Delete all schedules for this IP
-    queryInput := &dynamodb.QueryInput{
-        TableName:              aws.String("nexusscan-schedules"),
-        KeyConditionExpression: aws.String("IPAddress = :ip"),
-        ExpressionAttributeValues: map[string]types.AttributeValue{
-            ":ip": &types.AttributeValueMemberS{Value: ipAddress},
-        },
-    }
-    
-    result, err := c.DynamoDB.Query(ctx, queryInput)
-    if err != nil {
-        return err
-    }
-    
-    for _, item := range result.Items {
-        scheduleType := item["ScheduleType"].(*types.AttributeValueMemberS).Value
-        
-        _, err := c.DynamoDB.DeleteItem(ctx, &dynamodb.DeleteItemInput{
-            TableName: aws.String("nexusscan-schedules"),
-            Key: map[string]types.AttributeValue{
-                "IPAddress":    &types.AttributeValueMemberS{Value: ipAddress},
-                "ScheduleType": &types.AttributeValueMemberS{Value: scheduleType},
-            },
-        })
-        if err != nil {
-            log.Printf("Error deleting schedule for IP %s: %v", ipAddress, err)
-        }
+    if err := c.DeleteIPSchedules(ctx, ipAddress); err != nil {
+        log.Printf("Error deleting schedules for IP %s: %v", ipAddress, err)
     }
     
     // Delete from OpenPorts table
@@ -241,7 +219,6 @@ func (c *Client) DeleteIP(ctx context.Context, ipAddress string) error {
     
     return nil
 }
-
 // GetIPs retrieves all IP addresses with pagination
 func (c *Client) GetIPs(ctx context.Context, limit int, offset int) ([]models.IP, error) {
 	scanInput := &dynamodb.ScanInput{
@@ -283,28 +260,32 @@ func min(a, b int) int {
 }
 
 // AddSchedule adds or updates a scan schedule for an IP
-func (c *Client) AddSchedule(ctx context.Context, ipAddress string, scheduleType string, portSet string, enabled bool) error {
-	now := time.Now()
-	timestamp := now.Format(time.RFC3339)
-	nextRun := now.Add(getScheduleInterval(scheduleType))
-	
-	item := map[string]types.AttributeValue{
-		"IPAddress":    &types.AttributeValueMemberS{Value: ipAddress},
-		"ScheduleType": &types.AttributeValueMemberS{Value: scheduleType},
-		"PortSet":      &types.AttributeValueMemberS{Value: portSet},
-		"Enabled":      &types.AttributeValueMemberBOOL{Value: enabled},
-		"CreatedAt":    &types.AttributeValueMemberS{Value: timestamp},
-		"UpdatedAt":    &types.AttributeValueMemberS{Value: timestamp},
-		"LastRun":      &types.AttributeValueMemberS{Value: ""},
-		"NextRun":      &types.AttributeValueMemberS{Value: nextRun.Format(time.RFC3339)},
-	}
-	
-	_, err := c.DynamoDB.PutItem(ctx, &dynamodb.PutItemInput{
-		TableName: aws.String("nexusscan-schedules"),
-		Item:      item,
-	})
-	
-	return err
+func (c *Client) AddSchedule(ctx context.Context, ipAddress string, scheduleType string, portSet string, enabled bool) (string, error) {
+    now := time.Now()
+    timestamp := now.Format(time.RFC3339)
+    nextRun := now.Add(getScheduleInterval(scheduleType))
+    
+    // Generate a unique ID for the schedule
+    scheduleID := uuid.New().String()
+    
+    item := map[string]types.AttributeValue{
+        "ScheduleID":   &types.AttributeValueMemberS{Value: scheduleID},
+        "IPAddress":    &types.AttributeValueMemberS{Value: ipAddress},
+        "ScheduleType": &types.AttributeValueMemberS{Value: scheduleType},
+        "PortSet":      &types.AttributeValueMemberS{Value: portSet},
+        "Enabled":      &types.AttributeValueMemberBOOL{Value: enabled},
+        "CreatedAt":    &types.AttributeValueMemberS{Value: timestamp},
+        "UpdatedAt":    &types.AttributeValueMemberS{Value: timestamp},
+        "LastRun":      &types.AttributeValueMemberS{Value: ""},
+        "NextRun":      &types.AttributeValueMemberS{Value: nextRun.Format(time.RFC3339)},
+    }
+    
+    _, err := c.DynamoDB.PutItem(ctx, &dynamodb.PutItemInput{
+        TableName: aws.String("nexusscan-schedules"),
+        Item:      item,
+    })
+    
+    return scheduleID, err
 }
 
 // Helper function to determine schedule interval
@@ -326,41 +307,75 @@ func getScheduleInterval(scheduleType string) time.Duration {
 }
 
 // DeleteSchedule removes a scan schedule for an IP
-func (c *Client) DeleteSchedule(ctx context.Context, ipAddress string, scheduleType string) error {
-	_, err := c.DynamoDB.DeleteItem(ctx, &dynamodb.DeleteItemInput{
-		TableName: aws.String("nexusscan-schedules"),
-		Key: map[string]types.AttributeValue{
-			"IPAddress":    &types.AttributeValueMemberS{Value: ipAddress},
-			"ScheduleType": &types.AttributeValueMemberS{Value: scheduleType},
-		},
-	})
-	
-	return err
+func (c *Client) DeleteSchedule(ctx context.Context, scheduleID string) error {
+    _, err := c.DynamoDB.DeleteItem(ctx, &dynamodb.DeleteItemInput{
+        TableName: aws.String("nexusscan-schedules"),
+        Key: map[string]types.AttributeValue{
+            "ScheduleID": &types.AttributeValueMemberS{Value: scheduleID},
+        },
+    })
+    
+    return err
 }
 
+// DeleteIPSchedules deletes all schedules for an IP (used when deleting an IP)
+func (c *Client) DeleteIPSchedules(ctx context.Context, ipAddress string) error {
+    // Query to get all schedules for this IP
+    queryInput := &dynamodb.QueryInput{
+        TableName:              aws.String("nexusscan-schedules"),
+        IndexName:              aws.String("IPAddressIndex"),
+        KeyConditionExpression: aws.String("IPAddress = :ip"),
+        ExpressionAttributeValues: map[string]types.AttributeValue{
+            ":ip": &types.AttributeValueMemberS{Value: ipAddress},
+        },
+    }
+    
+    result, err := c.DynamoDB.Query(ctx, queryInput)
+    if err != nil {
+        return err
+    }
+    
+    for _, item := range result.Items {
+        scheduleID := item["ScheduleID"].(*types.AttributeValueMemberS).Value
+        
+        _, err := c.DynamoDB.DeleteItem(ctx, &dynamodb.DeleteItemInput{
+            TableName: aws.String("nexusscan-schedules"),
+            Key: map[string]types.AttributeValue{
+                "ScheduleID": &types.AttributeValueMemberS{Value: scheduleID},
+            },
+        })
+        if err != nil {
+            log.Printf("Error deleting schedule %s for IP %s: %v", scheduleID, ipAddress, err)
+        }
+    }
+    
+    return nil
+}
+
+
 // UpdateScheduleStatus enables or disables a scan schedule
-func (c *Client) UpdateScheduleStatus(ctx context.Context, ipAddress string, scheduleType string, enabled bool) error {
-	updateInput := &dynamodb.UpdateItemInput{
-		TableName: aws.String("nexusscan-schedules"),
-		Key: map[string]types.AttributeValue{
-			"IPAddress":    &types.AttributeValueMemberS{Value: ipAddress},
-			"ScheduleType": &types.AttributeValueMemberS{Value: scheduleType},
-		},
-		UpdateExpression: aws.String("SET Enabled = :enabled, UpdatedAt = :updatedAt"),
-		ExpressionAttributeValues: map[string]types.AttributeValue{
-			":enabled":   &types.AttributeValueMemberBOOL{Value: enabled},
-			":updatedAt": &types.AttributeValueMemberS{Value: time.Now().Format(time.RFC3339)},
-		},
-	}
-	
-	_, err := c.DynamoDB.UpdateItem(ctx, updateInput)
-	return err
+func (c *Client) UpdateScheduleStatus(ctx context.Context, scheduleID string, enabled bool) error {
+    updateInput := &dynamodb.UpdateItemInput{
+        TableName: aws.String("nexusscan-schedules"),
+        Key: map[string]types.AttributeValue{
+            "ScheduleID": &types.AttributeValueMemberS{Value: scheduleID},
+        },
+        UpdateExpression: aws.String("SET Enabled = :enabled, UpdatedAt = :updatedAt"),
+        ExpressionAttributeValues: map[string]types.AttributeValue{
+            ":enabled":   &types.AttributeValueMemberBOOL{Value: enabled},
+            ":updatedAt": &types.AttributeValueMemberS{Value: time.Now().Format(time.RFC3339)},
+        },
+    }
+    
+    _, err := c.DynamoDB.UpdateItem(ctx, updateInput)
+    return err
 }
 
 // GetSchedulesForIP retrieves all scan schedules for an IP
 func (c *Client) GetSchedulesForIP(ctx context.Context, ipAddress string) ([]models.Schedule, error) {
     queryInput := &dynamodb.QueryInput{
         TableName:              aws.String("nexusscan-schedules"),
+        IndexName:              aws.String("IPAddressIndex"),
         KeyConditionExpression: aws.String("IPAddress = :ip"),
         ExpressionAttributeValues: map[string]types.AttributeValue{
             ":ip": &types.AttributeValueMemberS{Value: ipAddress},
@@ -376,6 +391,7 @@ func (c *Client) GetSchedulesForIP(ctx context.Context, ipAddress string) ([]mod
     var schedules []models.Schedule
     for _, item := range result.Items {
         schedule := models.Schedule{
+            ScheduleID:   getString(item, "ScheduleID"),
             IPAddress:    getString(item, "IPAddress"),
             ScheduleType: getString(item, "ScheduleType"),
             PortSet:      getString(item, "PortSet"),
@@ -392,6 +408,41 @@ func (c *Client) GetSchedulesForIP(ctx context.Context, ipAddress string) ([]mod
     }
     
     return schedules, nil
+}
+
+// GetScheduleByID retrieves a schedule by its ID
+func (c *Client) GetScheduleByID(ctx context.Context, scheduleID string) (*models.Schedule, error) {
+    input := &dynamodb.GetItemInput{
+        TableName: aws.String("nexusscan-schedules"),
+        Key: map[string]types.AttributeValue{
+            "ScheduleID": &types.AttributeValueMemberS{Value: scheduleID},
+        },
+    }
+    
+    result, err := c.DynamoDB.GetItem(ctx, input)
+    if err != nil {
+        return nil, err
+    }
+    
+    if result.Item == nil {
+        return nil, fmt.Errorf("schedule not found")
+    }
+    
+    schedule := &models.Schedule{
+        ScheduleID:   getString(result.Item, "ScheduleID"),
+        IPAddress:    getString(result.Item, "IPAddress"),
+        ScheduleType: getString(result.Item, "ScheduleType"),
+        PortSet:      getString(result.Item, "PortSet"),
+        Enabled:      getBool(result.Item, "Enabled"),
+    }
+    
+    // Handle time fields
+    schedule.CreatedAt = getTime(result.Item, "CreatedAt")
+    schedule.UpdatedAt = getTime(result.Item, "UpdatedAt")
+    schedule.LastRun = getTime(result.Item, "LastRun")
+    schedule.NextRun = getTime(result.Item, "NextRun")
+    
+    return schedule, nil
 }
 
 // Helper functions for safer item extraction
@@ -422,55 +473,89 @@ func getTime(item map[string]types.AttributeValue, key string) time.Time {
 
 // GetPendingScans retrieves IPs that need to be scanned for a specific schedule type
 func (c *Client) GetPendingScans(ctx context.Context, scheduleType string, maxIPs int) ([]models.ScheduleScan, error) {
-	now := time.Now().Format(time.RFC3339)
-	
-	queryInput := &dynamodb.QueryInput{
-		TableName:              aws.String("nexusscan-schedules"),
-		IndexName:              aws.String("ScheduleTypeIndex"),
-		KeyConditionExpression: aws.String("ScheduleType = :scheduleType"),
-		FilterExpression:       aws.String("Enabled = :enabled AND NextRun <= :now"),
-		ExpressionAttributeValues: map[string]types.AttributeValue{
-			":scheduleType": &types.AttributeValueMemberS{Value: scheduleType},
-			":enabled":      &types.AttributeValueMemberBOOL{Value: true},
-			":now":          &types.AttributeValueMemberS{Value: now},
-		},
-		Limit: aws.Int32(int32(maxIPs)),
-	}
-	
-	result, err := c.DynamoDB.Query(ctx, queryInput)
-	if err != nil {
-		return nil, err
-	}
-	
-	var scheduledScans []models.ScheduleScan
-	err = attributevalue.UnmarshalListOfMaps(result.Items, &scheduledScans)
-	if err != nil {
-		return nil, err
-	}
-	
-	return scheduledScans, nil
+    now := time.Now().Format(time.RFC3339)
+    
+    queryInput := &dynamodb.QueryInput{
+        TableName:              aws.String("nexusscan-schedules"),
+        IndexName:              aws.String("ScheduleTypeIndex"),
+        KeyConditionExpression: aws.String("ScheduleType = :scheduleType"),
+        FilterExpression:       aws.String("Enabled = :enabled AND NextRun <= :now"),
+        ExpressionAttributeValues: map[string]types.AttributeValue{
+            ":scheduleType": &types.AttributeValueMemberS{Value: scheduleType},
+            ":enabled":      &types.AttributeValueMemberBOOL{Value: true},
+            ":now":          &types.AttributeValueMemberS{Value: now},
+        },
+        Limit: aws.Int32(int32(maxIPs)),
+    }
+    
+    result, err := c.DynamoDB.Query(ctx, queryInput)
+    if err != nil {
+        return nil, err
+    }
+    
+    var scheduledScans []models.ScheduleScan
+    for _, item := range result.Items {
+        scan := models.ScheduleScan{
+            ScheduleID:   getString(item, "ScheduleID"),
+            IPAddress:    getString(item, "IPAddress"),
+            ScheduleType: getString(item, "ScheduleType"),
+            PortSet:      getString(item, "PortSet"),
+        }
+        
+        // Parse NextRun time
+        nextRunStr := getString(item, "NextRun")
+        if nextRunStr != "" {
+            nextRun, err := time.Parse(time.RFC3339, nextRunStr)
+            if err == nil {
+                scan.NextRun = nextRun
+            }
+        }
+        
+        scheduledScans = append(scheduledScans, scan)
+    }
+    
+    return scheduledScans, nil
 }
 
 // UpdateScheduleAfterScan updates the LastRun and NextRun timestamps after a scan
-func (c *Client) UpdateScheduleAfterScan(ctx context.Context, ipAddress string, scheduleType string) error {
-	now := time.Now()
-	nextRun := now.Add(getScheduleInterval(scheduleType))
-	
-	updateInput := &dynamodb.UpdateItemInput{
-		TableName: aws.String("nexusscan-schedules"),
-		Key: map[string]types.AttributeValue{
-			"IPAddress":    &types.AttributeValueMemberS{Value: ipAddress},
-			"ScheduleType": &types.AttributeValueMemberS{Value: scheduleType},
-		},
-		UpdateExpression: aws.String("SET LastRun = :lastRun, NextRun = :nextRun"),
-		ExpressionAttributeValues: map[string]types.AttributeValue{
-			":lastRun": &types.AttributeValueMemberS{Value: now.Format(time.RFC3339)},
-			":nextRun": &types.AttributeValueMemberS{Value: nextRun.Format(time.RFC3339)},
-		},
-	}
-	
-	_, err := c.DynamoDB.UpdateItem(ctx, updateInput)
-	return err
+func (c *Client) UpdateScheduleAfterScan(ctx context.Context, scheduleID string, scheduleType string) error {
+    now := time.Now()
+    nextRun := now.Add(getScheduleInterval(scheduleType))
+    
+    updateInput := &dynamodb.UpdateItemInput{
+        TableName: aws.String("nexusscan-schedules"),
+        Key: map[string]types.AttributeValue{
+            "ScheduleID": &types.AttributeValueMemberS{Value: scheduleID},
+        },
+        UpdateExpression: aws.String("SET LastRun = :lastRun, NextRun = :nextRun, UpdatedAt = :updatedAt"),
+        ExpressionAttributeValues: map[string]types.AttributeValue{
+            ":lastRun":   &types.AttributeValueMemberS{Value: now.Format(time.RFC3339)},
+            ":nextRun":   &types.AttributeValueMemberS{Value: nextRun.Format(time.RFC3339)},
+            ":updatedAt": &types.AttributeValueMemberS{Value: now.Format(time.RFC3339)},
+        },
+    }
+    
+    _, err := c.DynamoDB.UpdateItem(ctx, updateInput)
+    return err
+}
+func (c *Client) UpdateSchedule(ctx context.Context, scheduleID string, scheduleType string, portSet string, enabled bool) error {
+    updateInput := &dynamodb.UpdateItemInput{
+        TableName: aws.String("nexusscan-schedules"),
+        Key: map[string]types.AttributeValue{
+            "ScheduleID": &types.AttributeValueMemberS{Value: scheduleID},
+        },
+        UpdateExpression: aws.String("SET ScheduleType = :scheduleType, PortSet = :portSet, Enabled = :enabled, UpdatedAt = :updatedAt, NextRun = :nextRun"),
+        ExpressionAttributeValues: map[string]types.AttributeValue{
+            ":scheduleType": &types.AttributeValueMemberS{Value: scheduleType},
+            ":portSet":      &types.AttributeValueMemberS{Value: portSet},
+            ":enabled":      &types.AttributeValueMemberBOOL{Value: enabled},
+            ":updatedAt":    &types.AttributeValueMemberS{Value: time.Now().Format(time.RFC3339)},
+            ":nextRun":      &types.AttributeValueMemberS{Value: time.Now().Add(getScheduleInterval(scheduleType)).Format(time.RFC3339)},
+        },
+    }
+    
+    _, err := c.DynamoDB.UpdateItem(ctx, updateInput)
+    return err
 }
 
 // GetOpenPorts retrieves previously discovered open ports for an IP

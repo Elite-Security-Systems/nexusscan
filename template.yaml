@@ -191,16 +191,25 @@ Resources:
         ReadCapacityUnits: 10
         WriteCapacityUnits: 5
       AttributeDefinitions:
+        - AttributeName: ScheduleID
+          AttributeType: S
         - AttributeName: IPAddress
           AttributeType: S
         - AttributeName: ScheduleType
           AttributeType: S
       KeySchema:
-        - AttributeName: IPAddress
+        - AttributeName: ScheduleID
           KeyType: HASH
-        - AttributeName: ScheduleType
-          KeyType: RANGE
       GlobalSecondaryIndexes:
+        - IndexName: IPAddressIndex
+          KeySchema:
+            - AttributeName: IPAddress
+              KeyType: HASH
+          Projection:
+            ProjectionType: ALL
+          ProvisionedThroughput:
+            ReadCapacityUnits: 5
+            WriteCapacityUnits: 5
         - IndexName: ScheduleTypeIndex
           KeySchema:
             - AttributeName: ScheduleType
