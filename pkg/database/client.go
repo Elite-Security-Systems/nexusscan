@@ -359,27 +359,66 @@ func (c *Client) UpdateScheduleStatus(ctx context.Context, ipAddress string, sch
 
 // GetSchedulesForIP retrieves all scan schedules for an IP
 func (c *Client) GetSchedulesForIP(ctx context.Context, ipAddress string) ([]models.Schedule, error) {
-	queryInput := &dynamodb.QueryInput{
-		TableName:              aws.String("nexusscan-schedules"),
-		KeyConditionExpression: aws.String("IPAddress = :ip"),
-		ExpressionAttributeValues: map[string]types.AttributeValue{
-			":ip": &types.AttributeValueMemberS{Value: ipAddress},
-		},
-	}
-	
-	result, err := c.DynamoDB.Query(ctx, queryInput)
-	if err != nil {
-		return nil, err
-	}
-	
-	var schedules []models.Schedule
-	err = attributevalue.UnmarshalListOfMaps(result.Items, &schedules)
-	if err != nil {
-		return nil, err
-	}
-	
-	return schedules, nil
+    queryInput := &dynamodb.QueryInput{
+        TableName:              aws.String("nexusscan-schedules"),
+        KeyConditionExpression: aws.String("IPAddress = :ip"),
+        ExpressionAttributeValues: map[string]types.AttributeValue{
+            ":ip": &types.AttributeValueMemberS{Value: ipAddress},
+        },
+    }
+    
+    result, err := c.DynamoDB.Query(ctx, queryInput)
+    if err != nil {
+        return nil, err
+    }
+    
+    // Custom unmarshaling to handle empty time fields
+    var schedules []models.Schedule
+    for _, item := range result.Items {
+        schedule := models.Schedule{
+            IPAddress:    getString(item, "IPAddress"),
+            ScheduleType: getString(item, "ScheduleType"),
+            PortSet:      getString(item, "PortSet"),
+            Enabled:      getBool(item, "Enabled"),
+        }
+        
+        // Handle time fields with default values if they're empty
+        schedule.CreatedAt = getTime(item, "CreatedAt")
+        schedule.UpdatedAt = getTime(item, "UpdatedAt")
+        schedule.LastRun = getTime(item, "LastRun")
+        schedule.NextRun = getTime(item, "NextRun")
+        
+        schedules = append(schedules, schedule)
+    }
+    
+    return schedules, nil
 }
+
+// Helper functions for safer item extraction
+func getString(item map[string]types.AttributeValue, key string) string {
+    if val, ok := item[key].(*types.AttributeValueMemberS); ok {
+        return val.Value
+    }
+    return ""
+}
+
+func getBool(item map[string]types.AttributeValue, key string) bool {
+    if val, ok := item[key].(*types.AttributeValueMemberBOOL); ok {
+        return val.Value
+    }
+    return false
+}
+
+func getTime(item map[string]types.AttributeValue, key string) time.Time {
+    if val, ok := item[key].(*types.AttributeValueMemberS); ok && val.Value != "" {
+        t, err := time.Parse(time.RFC3339, val.Value)
+        if err == nil {
+            return t
+        }
+    }
+    return time.Time{} // Return zero time if parsing fails
+}
+
 
 // GetPendingScans retrieves IPs that need to be scanned for a specific schedule type
 func (c *Client) GetPendingScans(ctx context.Context, scheduleType string, maxIPs int) ([]models.ScheduleScan, error) {
