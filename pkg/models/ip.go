@@ -33,12 +33,13 @@ type ScheduleScan struct {
 
 // ScanResult represents the results of a completed scan
 type ScanResult struct {
-	IPAddress     string    `json:"ipAddress" dynamodbav:"IPAddress"`
-	ScanTimestamp string    `json:"scanTimestamp" dynamodbav:"ScanTimestamp"`
-	ScanID        string    `json:"scanId" dynamodbav:"ScanId"`
-	OpenPorts     []Port    `json:"openPorts" dynamodbav:"OpenPorts"`
-	ScanDuration  int       `json:"scanDuration" dynamodbav:"ScanDuration"`
-	PortsScanned  int       `json:"portsScanned" dynamodbav:"PortsScanned"`
-	ScheduleType  string    `json:"scheduleType,omitempty" dynamodbav:"ScheduleType,omitempty"`
-	ExpirationTime int64    `json:"expirationTime,omitempty" dynamodbav:"ExpirationTime,omitempty"`
+    IPAddress     string    `json:"ipAddress" dynamodbav:"IPAddress"`
+    ScanTimestamp string    `json:"scanTimestamp" dynamodbav:"ScanTimestamp"`
+    ScanID        string    `json:"scanId" dynamodbav:"ScanId"`
+    OpenPorts     []Port    `json:"openPorts" dynamodbav:"OpenPorts"`
+    ScanDuration  int       `json:"scanDuration" dynamodbav:"ScanDuration"`
+    PortsScanned  int       `json:"portsScanned" dynamodbav:"PortsScanned"`
+    ScheduleType  string    `json:"scheduleType,omitempty" dynamodbav:"ScheduleType,omitempty"`
+    ExpirationTime int64    `json:"expirationTime,omitempty" dynamodbav:"ExpirationTime,omitempty"`
+    IsFinalSummary bool     `json:"isFinalSummary,omitempty" dynamodbav:"IsFinalSummary,omitempty"`
 }

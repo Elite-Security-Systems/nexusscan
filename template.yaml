@@ -119,9 +119,6 @@ Resources:
       CodeUri: ./dist/processor.zip
       MemorySize: 512
       Timeout: 300
-      Environment:
-        Variables:
-          RESULTS_BUCKET: !Ref ResultsBucket
       Events:
         SQSEvent:
           Type: SQS
@@ -136,8 +133,6 @@ Resources:
             TableName: !Ref OpenPortsTable
         - DynamoDBCrudPolicy:
             TableName: !Ref IPsTable
-        - S3CrudPolicy:
-            BucketName: !Ref ResultsBucket
 
   ApiFunction:
     Type: 'AWS::Serverless::Function'
@@ -168,8 +163,6 @@ Resources:
             TableName: !Ref ResultsTable
         - DynamoDBCrudPolicy:
             TableName: !Ref OpenPortsTable
-        - S3ReadPolicy:
-            BucketName: !Ref ResultsBucket
         - LambdaInvokePolicy:
             FunctionName: !Ref SchedulerFunction
 
@@ -286,24 +279,6 @@ Resources:
       BucketName: !Sub 'nexusscan-code-${AWS::AccountId}'
       VersioningConfiguration:
         Status: Enabled
-
-  ResultsBucket:
-    Type: 'AWS::S3::Bucket'
-    Properties:
-      BucketName: !Sub 'nexusscan-results-${AWS::AccountId}'
-      LifecycleConfiguration:
-        Rules:
-          - Id: DeleteOldReports
-            Status: Enabled
-            Prefix: detailed-reports/
-            ExpirationInDays: 30
-          - Id: ArchiveOlderSummaries
-            Status: Enabled
-            Prefix: summary-reports/
-            Transitions:
-              - TransitionInDays: 30
-                StorageClass: STANDARD_IA
-            ExpirationInDays: 365
 
   # API Gateway
   NexusScanApi:

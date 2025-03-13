@@ -3,19 +3,16 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
-	"fmt"
 	"log"
-	"os"
+	"time"
 
 	"github.com/aws/aws-lambda-go/events"
 	"github.com/aws/aws-lambda-go/lambda"
-	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
-	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/Elite-Security-Systems/nexusscan/pkg/database"
+	"github.com/Elite-Security-Systems/nexusscan/pkg/models"
 	"github.com/Elite-Security-Systems/nexusscan/pkg/scanner"
 )
 
@@ -28,8 +25,6 @@ func HandleSQSEvent(ctx context.Context, event events.SQSEvent) error {
 	}
 	
 	db := database.NewClient(cfg)
-	s3Client := s3.NewFromConfig(cfg)
-	resultsBucket := os.Getenv("RESULTS_BUCKET")
 	
 	for _, message := range event.Records {
 		// Parse message
@@ -58,39 +53,33 @@ func HandleSQSEvent(ctx context.Context, event events.SQSEvent) error {
 			}
 		}
 		
-		// Store detailed results in S3 if this is the last batch
-		if result.BatchID == result.TotalBatches-1 && resultsBucket != "" {
-			// Deep copy the result to avoid modifying the original
-			fullResult := scanner.ScanResult{
-				IPAddress:    result.IPAddress,
-				ScanID:       result.ScanID,
-				OpenPorts:    result.OpenPorts,
-				ScanDuration: result.ScanDuration,
-				BatchID:      result.BatchID,
-				TotalBatches: result.TotalBatches,
-				PortsScanned: result.PortsScanned,
-				ScanComplete: result.ScanComplete,
-				ScheduleType: result.ScheduleType,
-			}
-			
-			// Convert to JSON
-			resultJSON, err := json.MarshalIndent(fullResult, "", "  ")
+		// If this is the last batch, create a final summary with all open ports
+		if result.BatchID == result.TotalBatches-1 {
+			// Get the complete list of open ports
+			completeOpenPorts, err := db.GetOpenPorts(ctx, result.IPAddress)
 			if err != nil {
-				log.Printf("Error marshaling result for S3: %v", err)
-				continue
-			}
-			
-			// Store in S3
-			key := fmt.Sprintf("detailed-reports/%s/%s.json", result.IPAddress, result.ScanID)
-			_, err = s3Client.PutObject(ctx, &s3.PutObjectInput{
-				Bucket:      aws.String(resultsBucket),
-				Key:         aws.String(key),
-				Body:        bytes.NewReader(resultJSON),
-				ContentType: aws.String("application/json"),
-			})
-			
-			if err != nil {
-				log.Printf("Error storing result in S3: %v", err)
+				log.Printf("Error getting complete open ports for IP %s: %v", result.IPAddress, err)
+			} else {
+				// Create a complete result with all open ports
+				var fullOpenPorts []models.Port
+				for _, portNum := range completeOpenPorts {
+					fullOpenPorts = append(fullOpenPorts, models.Port{
+						Number:  portNum,
+						State:   "open",
+						Latency: 1 * time.Millisecond,
+					})
+				}
+				
+				// Store a final scan summary with complete information
+				log.Printf("Storing final scan summary for IP %s with %d open ports", 
+					result.IPAddress, len(fullOpenPorts))
+				
+				if err := db.StoreFinalScanSummary(ctx, result.IPAddress, result.ScanID, fullOpenPorts, 
+					result.ScanDuration, result.PortsScanned); err != nil {
+					log.Printf("Error storing final scan summary: %v", err)
+				} else {
+					log.Printf("Successfully stored final scan summary")
+				}
 			}
 		}
 		

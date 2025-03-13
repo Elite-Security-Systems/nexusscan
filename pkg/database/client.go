@@ -7,6 +7,7 @@ import (
 	"log"
 	"strconv"
 	"time"
+	"encoding/json"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
@@ -54,57 +55,191 @@ func (c *Client) AddIP(ctx context.Context, ipAddress string) error {
 	return err
 }
 
+
+// StoreFinalScanSummary stores a final summary of a completed scan with all discovered ports
+func (c *Client) StoreFinalScanSummary(ctx context.Context, ipAddress string, scanID string, openPorts []models.Port, scanDuration time.Duration, portsScanned int) error {
+    timestamp := time.Now().Format(time.RFC3339)
+    
+    // Debug output to see what we're trying to store
+    log.Printf("Final summary for %s with %d ports: %+v", ipAddress, len(openPorts), openPorts)
+    
+    // Create a simplified version of open ports with just the essential fields
+    simplifiedPorts := make([]map[string]interface{}, 0, len(openPorts))
+    for _, port := range openPorts {
+        simplifiedPorts = append(simplifiedPorts, map[string]interface{}{
+            "number": port.Number,
+            "state": "open",
+            "latency": 1000000, // 1ms in nanoseconds
+        })
+    }
+    
+    // Marshal the simplified ports directly
+    portsJSON, err := json.Marshal(simplifiedPorts)
+    if err != nil {
+        log.Printf("Error marshaling ports to JSON: %v", err)
+        return err
+    }
+    
+    log.Printf("Ports JSON: %s", string(portsJSON))
+    
+    // Create DynamoDB item
+    item := map[string]types.AttributeValue{
+        "IPAddress":     &types.AttributeValueMemberS{Value: ipAddress},
+        "ScanTimestamp": &types.AttributeValueMemberS{Value: timestamp + "Z"},
+        "ScanId":        &types.AttributeValueMemberS{Value: scanID},
+        "ScanDuration":  &types.AttributeValueMemberN{Value: formatDuration(scanDuration)},
+        "PortsScanned":  &types.AttributeValueMemberN{Value: formatInt(portsScanned)},
+        "IsFinalSummary": &types.AttributeValueMemberBOOL{Value: true},
+        "ExpirationTime": &types.AttributeValueMemberN{Value: formatInt(int(time.Now().Add(30*24*time.Hour).Unix()))},
+    }
+    
+    // Add open ports if there are any
+    if len(openPorts) > 0 {
+        // Create a list of OpenPorts attributes manually
+        portsList := make([]types.AttributeValue, 0, len(openPorts))
+        for _, port := range openPorts {
+            portMap := map[string]types.AttributeValue{
+                "number": &types.AttributeValueMemberN{Value: strconv.Itoa(port.Number)},
+                "state":  &types.AttributeValueMemberS{Value: "open"},
+                "latency": &types.AttributeValueMemberN{Value: "1000000"},
+            }
+            portsList = append(portsList, &types.AttributeValueMemberM{Value: portMap})
+        }
+        item["OpenPorts"] = &types.AttributeValueMemberL{Value: portsList}
+    } else {
+        // Empty list
+        item["OpenPorts"] = &types.AttributeValueMemberL{Value: []types.AttributeValue{}}
+    }
+    
+    _, err = c.DynamoDB.PutItem(ctx, &dynamodb.PutItemInput{
+        TableName: aws.String("nexusscan-results"),
+        Item:      item,
+    })
+    
+    if err != nil {
+        log.Printf("Error storing final scan summary: %v", err)
+    } else {
+        log.Printf("Successfully stored final scan summary for %s with %d ports", ipAddress, len(openPorts))
+    }
+    
+    return err
+}
+
+
 // DeleteIP removes an IP address from the database
 func (c *Client) DeleteIP(ctx context.Context, ipAddress string) error {
-	// Delete from IPs table
-	_, err := c.DynamoDB.DeleteItem(ctx, &dynamodb.DeleteItemInput{
-		TableName: aws.String("nexusscan-ips"),
-		Key: map[string]types.AttributeValue{
-			"IPAddress": &types.AttributeValueMemberS{Value: ipAddress},
-		},
-	})
-	if err != nil {
-		return err
-	}
-	
-	// Delete all schedules for this IP
-	queryInput := &dynamodb.QueryInput{
-		TableName:              aws.String("nexusscan-schedules"),
-		KeyConditionExpression: aws.String("IPAddress = :ip"),
-		ExpressionAttributeValues: map[string]types.AttributeValue{
-			":ip": &types.AttributeValueMemberS{Value: ipAddress},
-		},
-	}
-	
-	result, err := c.DynamoDB.Query(ctx, queryInput)
-	if err != nil {
-		return err
-	}
-	
-	for _, item := range result.Items {
-		scheduleType := item["ScheduleType"].(*types.AttributeValueMemberS).Value
-		
-		_, err := c.DynamoDB.DeleteItem(ctx, &dynamodb.DeleteItemInput{
-			TableName: aws.String("nexusscan-schedules"),
-			Key: map[string]types.AttributeValue{
-				"IPAddress":    &types.AttributeValueMemberS{Value: ipAddress},
-				"ScheduleType": &types.AttributeValueMemberS{Value: scheduleType},
-			},
-		})
-		if err != nil {
-			log.Printf("Error deleting schedule for IP %s: %v", ipAddress, err)
-		}
-	}
-	
-	// Delete from OpenPorts table
-	_, err = c.DynamoDB.DeleteItem(ctx, &dynamodb.DeleteItemInput{
-		TableName: aws.String("nexusscan-open-ports"),
-		Key: map[string]types.AttributeValue{
-			"IPAddress": &types.AttributeValueMemberS{Value: ipAddress},
-		},
-	})
-	
-	return err
+    // Delete from IPs table
+    _, err := c.DynamoDB.DeleteItem(ctx, &dynamodb.DeleteItemInput{
+        TableName: aws.String("nexusscan-ips"),
+        Key: map[string]types.AttributeValue{
+            "IPAddress": &types.AttributeValueMemberS{Value: ipAddress},
+        },
+    })
+    if err != nil {
+        return err
+    }
+    
+    // Delete all schedules for this IP
+    queryInput := &dynamodb.QueryInput{
+        TableName:              aws.String("nexusscan-schedules"),
+        KeyConditionExpression: aws.String("IPAddress = :ip"),
+        ExpressionAttributeValues: map[string]types.AttributeValue{
+            ":ip": &types.AttributeValueMemberS{Value: ipAddress},
+        },
+    }
+    
+    result, err := c.DynamoDB.Query(ctx, queryInput)
+    if err != nil {
+        return err
+    }
+    
+    for _, item := range result.Items {
+        scheduleType := item["ScheduleType"].(*types.AttributeValueMemberS).Value
+        
+        _, err := c.DynamoDB.DeleteItem(ctx, &dynamodb.DeleteItemInput{
+            TableName: aws.String("nexusscan-schedules"),
+            Key: map[string]types.AttributeValue{
+                "IPAddress":    &types.AttributeValueMemberS{Value: ipAddress},
+                "ScheduleType": &types.AttributeValueMemberS{Value: scheduleType},
+            },
+        })
+        if err != nil {
+            log.Printf("Error deleting schedule for IP %s: %v", ipAddress, err)
+        }
+    }
+    
+    // Delete from OpenPorts table
+    _, err = c.DynamoDB.DeleteItem(ctx, &dynamodb.DeleteItemInput{
+        TableName: aws.String("nexusscan-open-ports"),
+        Key: map[string]types.AttributeValue{
+            "IPAddress": &types.AttributeValueMemberS{Value: ipAddress},
+        },
+    })
+    if err != nil {
+        log.Printf("Error deleting open ports for IP %s: %v", ipAddress, err)
+    }
+    
+    // Delete all scan results for this IP
+    // This requires a query + batch delete because scan results are stored with a composite key
+    scanResultsQuery := &dynamodb.QueryInput{
+        TableName:              aws.String("nexusscan-results"),
+        KeyConditionExpression: aws.String("IPAddress = :ip"),
+        ExpressionAttributeValues: map[string]types.AttributeValue{
+            ":ip": &types.AttributeValueMemberS{Value: ipAddress},
+        },
+        ProjectionExpression: aws.String("IPAddress, ScanTimestamp"),
+    }
+    
+    // Paginate through all results
+    paginator := dynamodb.NewQueryPaginator(c.DynamoDB, scanResultsQuery)
+    
+    for paginator.HasMorePages() {
+        page, err := paginator.NextPage(ctx)
+        if err != nil {
+            log.Printf("Error querying scan results for IP %s: %v", ipAddress, err)
+            break
+        }
+        
+        if len(page.Items) == 0 {
+            break
+        }
+        
+        // Process up to 25 items at a time (DynamoDB batch limit)
+        for i := 0; i < len(page.Items); i += 25 {
+            end := i + 25
+            if end > len(page.Items) {
+                end = len(page.Items)
+            }
+            
+            batch := page.Items[i:end]
+            
+            // Create delete requests for this batch
+            deleteRequests := make([]types.WriteRequest, len(batch))
+            for j, item := range batch {
+                deleteRequests[j] = types.WriteRequest{
+                    DeleteRequest: &types.DeleteRequest{
+                        Key: map[string]types.AttributeValue{
+                            "IPAddress":     item["IPAddress"],
+                            "ScanTimestamp": item["ScanTimestamp"],
+                        },
+                    },
+                }
+            }
+            
+            // Execute batch delete
+            _, err := c.DynamoDB.BatchWriteItem(ctx, &dynamodb.BatchWriteItemInput{
+                RequestItems: map[string][]types.WriteRequest{
+                    "nexusscan-results": deleteRequests,
+                },
+            })
+            
+            if err != nil {
+                log.Printf("Error batch deleting scan results for IP %s: %v", ipAddress, err)
+            }
+        }
+    }
+    
+    return nil
 }
 
 // GetIPs retrieves all IP addresses with pagination
@@ -379,79 +514,169 @@ func (c *Client) StoreOpenPorts(ctx context.Context, ipAddress string, openPorts
 
 // StoreScanResult saves a scan result
 func (c *Client) StoreScanResult(ctx context.Context, ipAddress string, scanID string, openPorts []models.Port, scanDuration time.Duration, portsScanned int) error {
-	timestamp := time.Now().Format(time.RFC3339)
-	
-	// Marshal the open ports
-	portsAV, err := attributevalue.Marshal(openPorts)
-	if err != nil {
-		return err
-	}
-	
-	item := map[string]types.AttributeValue{
-		"IPAddress":     &types.AttributeValueMemberS{Value: ipAddress},
-		"ScanTimestamp": &types.AttributeValueMemberS{Value: timestamp},
-		"ScanId":        &types.AttributeValueMemberS{Value: scanID},
-		"OpenPorts":     portsAV,
-		"ScanDuration":  &types.AttributeValueMemberN{Value: formatDuration(scanDuration)},
-		"PortsScanned":  &types.AttributeValueMemberN{Value: formatInt(portsScanned)},
-		// Set TTL for automatic cleanup (30 days for most results)
-		"ExpirationTime": &types.AttributeValueMemberN{Value: formatInt(int(time.Now().Add(30*24*time.Hour).Unix()))},
-	}
-	
-	_, err = c.DynamoDB.PutItem(ctx, &dynamodb.PutItemInput{
-		TableName: aws.String("nexusscan-results"),
-		Item:      item,
-	})
-	
-	if err != nil {
-		log.Printf("Error storing scan result: %v", err)
-	}
-	
-	// Also update the IP's LastScanned timestamp
-	updateInput := &dynamodb.UpdateItemInput{
-		TableName: aws.String("nexusscan-ips"),
-		Key: map[string]types.AttributeValue{
-			"IPAddress": &types.AttributeValueMemberS{Value: ipAddress},
-		},
-		UpdateExpression: aws.String("SET LastScanned = :lastScanned"),
-		ExpressionAttributeValues: map[string]types.AttributeValue{
-			":lastScanned": &types.AttributeValueMemberS{Value: timestamp},
-		},
-	}
-	
-	_, err = c.DynamoDB.UpdateItem(ctx, updateInput)
-	return err
+    timestamp := time.Now().Format(time.RFC3339)
+    
+    // Clean port data - remove service names if you don't want them
+    for i := range openPorts {
+        openPorts[i].Service = "" // Remove service names
+    }
+    
+    // Marshal the open ports
+    portsAV, err := attributevalue.Marshal(openPorts)
+    if err != nil {
+        return err
+    }
+    
+    item := map[string]types.AttributeValue{
+        "IPAddress":     &types.AttributeValueMemberS{Value: ipAddress},
+        "ScanTimestamp": &types.AttributeValueMemberS{Value: timestamp},
+        "ScanId":        &types.AttributeValueMemberS{Value: scanID},
+        "OpenPorts":     portsAV,
+        "ScanDuration":  &types.AttributeValueMemberN{Value: formatDuration(scanDuration)},
+        "PortsScanned":  &types.AttributeValueMemberN{Value: formatInt(portsScanned)},
+        // Set TTL for automatic cleanup (30 days for most results)
+        "ExpirationTime": &types.AttributeValueMemberN{Value: formatInt(int(time.Now().Add(30*24*time.Hour).Unix()))},
+    }
+    
+    _, err = c.DynamoDB.PutItem(ctx, &dynamodb.PutItemInput{
+        TableName: aws.String("nexusscan-results"),
+        Item:      item,
+    })
+    
+    if err != nil {
+        log.Printf("Error storing scan result: %v", err)
+    }
+    
+    // Also update the IP's LastScanned timestamp
+    updateInput := &dynamodb.UpdateItemInput{
+        TableName: aws.String("nexusscan-ips"),
+        Key: map[string]types.AttributeValue{
+            "IPAddress": &types.AttributeValueMemberS{Value: ipAddress},
+        },
+        UpdateExpression: aws.String("SET LastScanned = :lastScanned"),
+        ExpressionAttributeValues: map[string]types.AttributeValue{
+            ":lastScanned": &types.AttributeValueMemberS{Value: timestamp},
+        },
+    }
+    
+    _, err = c.DynamoDB.UpdateItem(ctx, updateInput)
+    return err
 }
+
 
 // GetScanResults retrieves scan results for an IP with limit
 func (c *Client) GetScanResults(ctx context.Context, ipAddress string, limit int) ([]models.ScanResult, error) {
-	if limit <= 0 {
-		limit = 10 // Default limit
-	}
-	
-	queryInput := &dynamodb.QueryInput{
-		TableName:              aws.String("nexusscan-results"),
-		KeyConditionExpression: aws.String("IPAddress = :ip"),
-		ExpressionAttributeValues: map[string]types.AttributeValue{
-			":ip": &types.AttributeValueMemberS{Value: ipAddress},
-		},
-		ScanIndexForward: aws.Bool(false), // Sort by timestamp descending (newest first)
-		Limit:            aws.Int32(int32(limit)),
-	}
-	
-	result, err := c.DynamoDB.Query(ctx, queryInput)
-	if err != nil {
-		return nil, err
-	}
-	
-	var scanResults []models.ScanResult
-	err = attributevalue.UnmarshalListOfMaps(result.Items, &scanResults)
-	if err != nil {
-		return nil, err
-	}
-	
-	return scanResults, nil
+    if limit <= 0 {
+        limit = 10 // Default limit
+    }
+    
+    // Query to get all scan results for this IP
+    queryInput := &dynamodb.QueryInput{
+        TableName:              aws.String("nexusscan-results"),
+        KeyConditionExpression: aws.String("IPAddress = :ip"),
+        ExpressionAttributeValues: map[string]types.AttributeValue{
+            ":ip": &types.AttributeValueMemberS{Value: ipAddress},
+        },
+        ScanIndexForward: aws.Bool(false), // Sort by timestamp descending (newest first)
+    }
+    
+    result, err := c.DynamoDB.Query(ctx, queryInput)
+    if err != nil {
+        return nil, err
+    }
+    
+    var scanResults []models.ScanResult
+    err = attributevalue.UnmarshalListOfMaps(result.Items, &scanResults)
+    if err != nil {
+        return nil, err
+    }
+    
+    // Group results by scanId
+    scanIdMap := make(map[string][]models.ScanResult)
+    for _, result := range scanResults {
+        scanIdMap[result.ScanID] = append(scanIdMap[result.ScanID], result)
+    }
+    
+    // Prioritize final summaries and consolidate results
+    var finalResults []models.ScanResult
+    for _, results := range scanIdMap {
+        // Look for a final summary first
+        var finalSummary *models.ScanResult
+        for i := range results {
+            if results[i].IsFinalSummary {
+                finalSummary = &results[i]
+                break
+            }
+        }
+        
+        if finalSummary != nil {
+            // Use the final summary if available
+            finalResults = append(finalResults, *finalSummary)
+        } else {
+            // Otherwise, consolidate batch results
+            // Use the result with the latest timestamp as the base
+            var latestResult models.ScanResult
+            for _, result := range results {
+                if result.ScanTimestamp > latestResult.ScanTimestamp {
+                    latestResult = result
+                }
+            }
+            
+            // Combine open ports from all batches
+            allOpenPorts := make([]models.Port, 0)
+            totalPortsScanned := 0
+            for _, result := range results {
+                allOpenPorts = append(allOpenPorts, result.OpenPorts...)
+                totalPortsScanned += result.PortsScanned
+            }
+            
+            // Create a map to deduplicate ports
+            portMap := make(map[int]models.Port)
+            for _, port := range allOpenPorts {
+                portMap[port.Number] = port
+            }
+            
+            // Convert back to slice
+            uniquePorts := make([]models.Port, 0, len(portMap))
+            for _, port := range portMap {
+                uniquePorts = append(uniquePorts, port)
+            }
+            
+            // Sort by port number
+            for i := 0; i < len(uniquePorts); i++ {
+                for j := i + 1; j < len(uniquePorts); j++ {
+                    if uniquePorts[i].Number > uniquePorts[j].Number {
+                        uniquePorts[i], uniquePorts[j] = uniquePorts[j], uniquePorts[i]
+                    }
+                }
+            }
+            
+            // Update the latest result with consolidated information
+            latestResult.OpenPorts = uniquePorts
+            latestResult.PortsScanned = totalPortsScanned
+            
+            finalResults = append(finalResults, latestResult)
+        }
+    }
+    
+    // Sort by timestamp descending
+    for i := 0; i < len(finalResults); i++ {
+        for j := i + 1; j < len(finalResults); j++ {
+            if finalResults[i].ScanTimestamp < finalResults[j].ScanTimestamp {
+                finalResults[i], finalResults[j] = finalResults[j], finalResults[i]
+            }
+        }
+    }
+    
+    // Apply limit
+    if len(finalResults) > limit {
+        finalResults = finalResults[:limit]
+    }
+    
+    return finalResults, nil
 }
+
+
 
 // Helper functions
 func formatDuration(d time.Duration) string {
