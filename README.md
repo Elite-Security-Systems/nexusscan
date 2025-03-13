@@ -1,104 +1,238 @@
-# NexusScan: Ultra-Fast Serverless Port Scanner
+# NexusScan
 
-A high-performance, serverless port scanner built on AWS Lambda that efficiently discovers open ports across your network assets.
-
-## Overview
-
-NexusScan provides a scalable, cost-efficient port scanning solution that leverages AWS serverless architecture to scan thousands of IP addresses without maintaining dedicated infrastructure. The system is designed to work within AWS free tier limits while providing enterprise-grade scanning capabilities.
-
-## Architecture
-
-NexusScan uses a distributed, event-driven architecture:
-
-- **API Gateway**: Provides RESTful endpoints for managing IPs, schedules, and scans
-- **Lambda Functions**: Serverless compute for API, scanning, processing, and scheduling
-- **DynamoDB**: Stores IPs, schedules, scan results, and open ports
-- **SQS Queues**: Manages scan tasks and results processing
-- **Cognito**: Handles authentication
+A distributed, scalable port scanning system built with AWS serverless architecture. NexusScan allows you to monitor open ports across multiple IP addresses with configurable scanning schedules and comprehensive result tracking.
 
 ## Features
 
-- **Flexible Scan Profiles**: Choose from predefined port sets or scan previously discovered open ports
-- **Scheduled Scanning**: Configure hourly, 12-hour, daily, weekly, or monthly scans
-- **Batch Processing**: Efficiently distributes large port ranges across multiple Lambda functions
-- **Result Aggregation**: Consolidates batch results for a comprehensive view
-- **Open Port Tracking**: Maintains history of discovered open ports
+- **Flexible Port Scanning**: Scan with predefined port sets or previously discovered open ports
+- **Scheduling System**: Configure hourly, 12-hour, daily, weekly, or monthly scans
+- **Distributed Architecture**: Handles large numbers of IPs and ports efficiently
+- **Comprehensive API**: RESTful endpoints for all operations
+- **Secure Authentication**: Protected with AWS Cognito
 
-## Deployment
+## Architecture
+
+NexusScan uses AWS serverless components:
+
+- **Lambda Functions**: Scanner, Scheduler, Worker, Processor, API
+- **DynamoDB**: For storing IP information, schedules, and scan results
+- **SQS Queues**: For distributing scanning tasks
+- **API Gateway**: For exposing the RESTful API
+- **Cognito**: For user authentication
+
+## Setup & Deployment
 
 ### Prerequisites
-- AWS Account with CLI configured
-- Go 1.16 or newer
-- AWS SAM CLI
 
-### Installation
+- AWS CLI installed and configured
+- AWS SAM CLI installed
+- Go 1.19 or later
+- jq (for JSON processing)
+
+### Deployment Steps
 
 1. Clone the repository:
    ```bash
-   git clone https://github.com/your-org/nexusscan.git
+   git clone https://github.com/Elite-Security-Systems/nexusscan.git
    cd nexusscan
    ```
 
-2. Make scripts executable:
-   ```bash
-   chmod +x build.sh deploy.sh monitor.sh examples.sh
-   ```
-
-3. Build and deploy:
+2. Build the Lambda functions:
    ```bash
    ./build.sh
+   ```
+
+3. Deploy to AWS:
+   ```bash
    ./deploy.sh
    ```
 
-4. After deployment, the script will output the API endpoint and Cognito details needed for authentication.
-
-## Usage
-
-### Authentication
-
-1. Create a user in the Cognito User Pool:
+4. Create an admin user:
    ```bash
+   # Extract configuration values
+   USER_POOL_ID=$(jq -r '.[] | select(.OutputKey == "UserPoolId") | .OutputValue' config.json)
+   CLIENT_ID=$(jq -r '.[] | select(.OutputKey == "UserPoolClientId") | .OutputValue' config.json)
+   API_ENDPOINT=$(jq -r '.[] | select(.OutputKey == "ApiEndpoint") | .OutputValue' config.json)
+   
+   # Create admin user
    aws cognito-idp admin-create-user \
-     --user-pool-id YOUR_USER_POOL_ID \
+     --user-pool-id $USER_POOL_ID \
      --username admin \
-     --temporary-password "Temp1234!"
-   ```
-
-2. Set a permanent password:
-   ```bash
+     --temporary-password "YourSecurePassword123!" \
+     --user-attributes Name=email,Value=your-email@example.com
+   
+   # Set permanent password
    aws cognito-idp admin-set-user-password \
-     --user-pool-id YOUR_USER_POOL_ID \
+     --user-pool-id $USER_POOL_ID \
      --username admin \
      --password "YourSecurePassword123!" \
      --permanent
    ```
 
-3. Get an authentication token:
+5. Get an authentication token (required for all API calls):
    ```bash
-   aws cognito-idp initiate-auth \
+   TOKEN=$(aws cognito-idp initiate-auth \
+     --client-id "$CLIENT_ID" \
      --auth-flow USER_PASSWORD_AUTH \
-     --client-id YOUR_CLIENT_ID \
-     --auth-parameters USERNAME=admin,PASSWORD="YourSecurePassword123!" \
-     --query "AuthenticationResult.IdToken" \
-     --output text
+     --auth-parameters USERNAME="admin",PASSWORD="YourSecurePassword123!" \
+     --region us-east-1 | jq -r '.AuthenticationResult.IdToken')
    ```
 
-4. Store the token for API requests:
-   ```bash
-   export TOKEN="YOUR_ID_TOKEN"
-   ```
+### Simplified Setup Script
 
-### API Examples
+Create a file called `setup.sh` with the following content:
 
-#### Add an IP to scan:
+```bash
+#!/bin/bash
+
+# Build and deploy
+./build.sh
+./deploy.sh
+
+# Create admin user
+USER="admin"
+PASSWORD="YourSecurePassword123!"
+EMAIL="your-email@example.com"
+
+# Extract configuration
+USER_POOL_ID=$(jq -r '.[] | select(.OutputKey == "UserPoolId") | .OutputValue' config.json)
+CLIENT_ID=$(jq -r '.[] | select(.OutputKey == "UserPoolClientId") | .OutputValue' config.json)
+API_ENDPOINT=$(jq -r '.[] | select(.OutputKey == "ApiEndpoint") | .OutputValue' config.json)
+
+# Save configuration for later use
+echo "export USER_POOL_ID=\"$USER_POOL_ID\"" > nexusscan-config.sh
+echo "export CLIENT_ID=\"$CLIENT_ID\"" >> nexusscan-config.sh
+echo "export API_ENDPOINT=\"$API_ENDPOINT\"" >> nexusscan-config.sh
+echo "export USER=\"$USER\"" >> nexusscan-config.sh
+echo "export PASSWORD=\"$PASSWORD\"" >> nexusscan-config.sh
+
+# Create user
+aws cognito-idp admin-create-user \
+  --user-pool-id $USER_POOL_ID \
+  --username $USER \
+  --temporary-password "$PASSWORD" \
+  --user-attributes Name=email,Value=$EMAIL
+
+aws cognito-idp admin-set-user-password \
+  --user-pool-id $USER_POOL_ID \
+  --username $USER \
+  --password "$PASSWORD" \
+  --permanent
+
+echo "Setup completed successfully."
+echo "Run 'source nexusscan-config.sh' to load the environment variables."
+```
+
+Make it executable and run:
+```bash
+chmod +x setup.sh
+./setup.sh
+source nexusscan-config.sh
+```
+
+### Testing Script
+
+Create a file called `test.sh` with the following content:
+
+```bash
+#!/bin/bash
+
+# Source configuration
+source nexusscan-config.sh
+
+# Get token
+TOKEN=$(aws cognito-idp initiate-auth \
+  --client-id "$CLIENT_ID" \
+  --auth-flow USER_PASSWORD_AUTH \
+  --auth-parameters USERNAME="$USER",PASSWORD="$PASSWORD" \
+  --region us-east-1 | jq -r '.AuthenticationResult.IdToken')
+
+# Test IP for scanning
+TEST_IP="1.1.1.1"
+
+# API Tests
+echo "Adding IP..."
+curl -s -X POST "${API_ENDPOINT}api/ip" -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -d "{ \"ip\": \"$TEST_IP\"}" | jq .
+
+echo "Scheduling immediate scan..."
+curl -s -X POST "${API_ENDPOINT}api/scan" -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -d "{ \"ip\": \"$TEST_IP\", \"portSet\": \"top_100\", \"immediate\": true }" | jq .
+
+echo "Waiting for scan to complete (10 seconds)..."
+sleep 10
+
+echo "Getting scan results..."
+curl -s -X GET "${API_ENDPOINT}api/scan-results/$TEST_IP" -H "Authorization: Bearer $TOKEN" | jq .
+
+echo "Getting open ports..."
+curl -s -X GET "${API_ENDPOINT}api/open-ports/$TEST_IP" -H "Authorization: Bearer $TOKEN" | jq .
+
+echo "Test completed."
+```
+
+Make it executable and run:
+```bash
+chmod +x test.sh
+./test.sh
+```
+
+## API Reference
+
+All API calls require an Authorization header with a valid Cognito token:
+```
+Authorization: Bearer YOUR_ID_TOKEN
+```
+
+### Authentication
+
+```bash
+# Get authentication token
+TOKEN=$(aws cognito-idp initiate-auth \
+  --client-id "$CLIENT_ID" \
+  --auth-flow USER_PASSWORD_AUTH \
+  --auth-parameters USERNAME="admin",PASSWORD="YourPassword" \
+  --region us-east-1 | jq -r '.AuthenticationResult.IdToken')
+```
+
+### IP Management
+
+#### Add a single IP
+
 ```bash
 curl -X POST "${API_ENDPOINT}api/ip" \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"ip": "192.168.1.1"}'
+  -d '{ "ip": "192.168.1.1" }'
 ```
 
-#### Set up a scheduled scan:
+#### Add multiple IPs
+
+```bash
+curl -X POST "${API_ENDPOINT}api/ips" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{ "ips": ["192.168.1.1", "192.168.1.2", "192.168.1.3"] }'
+```
+
+#### Get all IPs (with pagination)
+
+```bash
+curl -X GET "${API_ENDPOINT}api/ips?limit=10&offset=0" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+#### Delete an IP
+
+```bash
+curl -X DELETE "${API_ENDPOINT}api/ip" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{ "ip": "192.168.1.1" }'
+```
+
+### Schedule Management
+
+#### Add a scan schedule
+
 ```bash
 curl -X POST "${API_ENDPOINT}api/schedule" \
   -H "Authorization: Bearer $TOKEN" \
@@ -106,12 +240,61 @@ curl -X POST "${API_ENDPOINT}api/schedule" \
   -d '{
     "ip": "192.168.1.1",
     "scheduleType": "daily",
-    "portSet": "custom_3500",
+    "portSet": "top_100",
     "enabled": true
   }'
 ```
 
-#### Run an immediate scan:
+#### Add schedules for multiple IPs
+
+```bash
+curl -X POST "${API_ENDPOINT}api/schedules" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "ips": ["192.168.1.1", "192.168.1.2"],
+    "scheduleType": "daily",
+    "portSet": "top_100",
+    "enabled": true
+  }'
+```
+
+#### Get schedules for an IP
+
+```bash
+curl -X GET "${API_ENDPOINT}api/schedules/192.168.1.1" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+#### Update schedule status (enable/disable)
+
+```bash
+curl -X PUT "${API_ENDPOINT}api/schedule-status" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "ip": "192.168.1.1",
+    "scheduleType": "daily",
+    "enabled": false
+  }'
+```
+
+#### Delete a schedule
+
+```bash
+curl -X DELETE "${API_ENDPOINT}api/schedule" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "ip": "192.168.1.1",
+    "scheduleType": "daily"
+  }'
+```
+
+### Scan Management
+
+#### Start an immediate scan
+
 ```bash
 curl -X POST "${API_ENDPOINT}api/scan" \
   -H "Authorization: Bearer $TOKEN" \
@@ -123,57 +306,44 @@ curl -X POST "${API_ENDPOINT}api/scan" \
   }'
 ```
 
-#### Get open ports:
+Available port sets:
+- `previous_open`: Only scan ports previously found open
+- `top_100`: Scan the top 100 most common ports
+- `custom_3500`: Scan ~3500 commonly used ports
+- `full_65k`: Scan all 65,535 ports (takes much longer)
+
+#### Start a bulk scan for multiple IPs
+
+```bash
+curl -X POST "${API_ENDPOINT}api/scans" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "ips": ["192.168.1.1", "192.168.1.2"],
+    "portSet": "top_100",
+    "immediate": true
+  }'
+```
+
+#### Get scan results
+
+```bash
+curl -X GET "${API_ENDPOINT}api/scan-results/192.168.1.1?limit=5" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+#### Get open ports
+
 ```bash
 curl -X GET "${API_ENDPOINT}api/open-ports/192.168.1.1" \
   -H "Authorization: Bearer $TOKEN"
 ```
 
-#### Get scan results:
+## Clean Up
+
+To remove all resources created by NexusScan:
+
 ```bash
-curl -X GET "${API_ENDPOINT}api/scan-results/192.168.1.1" \
-  -H "Authorization: Bearer $TOKEN"
+aws cloudformation delete-stack --stack-name nexusscan-stack
+aws cloudformation wait stack-delete-complete --stack-name nexusscan-stack
 ```
-
-## Port Sets
-
-The system includes several predefined port sets:
-
-- **previous_open**: Only scans previously discovered open ports
-- **top_100**: Scans the 100 most common ports
-- **custom_3500**: Scans approximately 3,500 important ports
-- **full_65k**: Scans all 65,535 ports (resource intensive)
-
-## Schedule Types
-
-Available schedule frequencies:
-
-- **hourly**: Runs once every hour
-- **12hour**: Runs once every 12 hours
-- **daily**: Runs once per day
-- **weekly**: Runs once per week
-- **monthly**: Runs once every 30 days
-
-## Monitoring
-
-Monitor your scanning activity:
-```bash
-./monitor.sh
-```
-
-## Cost Optimization
-
-NexusScan is designed to operate within AWS free tier limits:
-- Lambda: 1,000,000 invocations, 400,000 GB-seconds per month
-- DynamoDB: 25 RCU/WCU
-- SQS: 1 million requests
-
-The architecture allows scaling to thousands of IPs while maintaining cost efficiency.
-
-## Support and Contribution
-
-For issues, feature requests, or contributions, please open an issue or pull request in the repository.
-
-## Security Considerations
-
-NexusScan is designed for legitimate security testing and network monitoring. Always ensure you have permission to scan the target IP addresses. Unauthorized port scanning may violate laws and terms of service.
