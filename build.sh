@@ -43,8 +43,4 @@ echo "Building API..."
 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o dist/api/bootstrap cmd/api/main.go
 (cd dist/api && zip -r ../api.zip bootstrap)
 
-# Build asset loader
-echo "Building asset loader..."
-go build -o bin/assetloader cmd/assetloader/main.go
-
 echo "Build complete!"
