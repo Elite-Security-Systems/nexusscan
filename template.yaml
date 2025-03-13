@@ -7,7 +7,7 @@ Description: 'NexusScan - IP-Based Port Scanner'
 Parameters:
   MemorySize:
     Type: Number
-    Default: 1024
+    Default: 256
     Description: Lambda function memory size for scanner
   MaxConcurrentScans:
     Type: Number

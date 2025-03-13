@@ -42,7 +42,7 @@ type ScanResult struct {
 }
 
 // Initialize connection pool
-var connPoolSize = 200
+var connPoolSize = 100
 var connPool = sync.Pool{
 	New: func() interface{} {
 		dialer := &net.Dialer{
@@ -113,7 +113,7 @@ func ScanPorts(ctx context.Context, request ScanRequest) (ScanResult, error) {
 	timeout := time.Duration(request.TimeoutMs) * time.Millisecond
 	concurrency := request.Concurrency
 	if concurrency <= 0 {
-		concurrency = 100 // Default concurrency
+		concurrency = 50 // Default concurrency
 	}
 	
 	retryCount := request.RetryCount

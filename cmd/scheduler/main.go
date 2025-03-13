@@ -37,7 +37,7 @@ type SchedulerEvent struct {
 // SplitIntoBatches divides ports into batches for Lambda functions
 func SplitIntoBatches(ports []int, batchSize int) [][]int {
 	if batchSize <= 0 {
-		batchSize = 1000 // Default
+		batchSize = 4000 // Default
 	}
 	
 	var batches [][]int
@@ -80,9 +80,9 @@ func ScheduleScan(ctx context.Context, ipAddress string, portSet string, sqsClie
 	}
 	
 	// Split ports into optimal batches for Lambda functions
-	batchSize := 1000 // Default batch size
+	batchSize := 4000 // Default batch size
 	if portSet == "full_65k" {
-		batchSize = 5000 // Larger batch size for full range scans
+		batchSize = 10000 // Larger batch size for full range scans
 	}
 	
 	batches := SplitIntoBatches(portsToScan, batchSize)
@@ -106,7 +106,7 @@ func ScheduleScan(ctx context.Context, ipAddress string, portSet string, sqsClie
 			TotalBatches: len(batches),
 			ScanID:       scanID,
 			TimeoutMs:    500, // Default timeout
-			Concurrency:  100, // Default concurrency
+			Concurrency:  50, // Default concurrency
 			RetryCount:   2,   // Default retry count
 		}
 		
@@ -163,7 +163,7 @@ func HandleSchedule(ctx context.Context, event SchedulerEvent) error {
 			}
 			
 			// Split ports into batches
-			batches := SplitIntoBatches(event.Ports, 1000)
+			batches := SplitIntoBatches(event.Ports, 4000)
 			
 			// Submit scan tasks to SQS
 			for i, batch := range batches {
@@ -174,7 +174,7 @@ func HandleSchedule(ctx context.Context, event SchedulerEvent) error {
 					TotalBatches: len(batches),
 					ScanID:       scanID,
 					TimeoutMs:    500, // Default timeout
-					Concurrency:  100, // Default concurrency
+					Concurrency:  50, // Default concurrency
 					RetryCount:   2,   // Default retry count
 				}
 				
