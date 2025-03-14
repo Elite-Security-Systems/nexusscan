@@ -2,6 +2,15 @@
 
 # Build script for NexusScan with httpx integration
 
+# Function to clean up on error
+cleanup() {
+  echo "Error occurred, cleaning up..."
+  exit 1
+}
+
+# Set up error handling
+trap cleanup ERR
+
 # Set environment
 export GO111MODULE=on
 export CGO_ENABLED=0
@@ -54,33 +63,41 @@ echo "Preparing httpx layer..."
 
 # Download httpx
 HTTPX_VERSION="1.6.10"
-HTTPX_URL="https://github.com/projectdiscovery/httpx/releases/download/v${HTTPX_VERSION}/httpx_${HTTPX_VERSION}_linux_amd64.zip"
 HTTPX_ZIP="httpx_${HTTPX_VERSION}_linux_amd64.zip"
+HTTPX_URL="https://github.com/projectdiscovery/httpx/releases/download/v${HTTPX_VERSION}/${HTTPX_ZIP}"
 
 echo "Downloading httpx v${HTTPX_VERSION}..."
 curl -L -o "$HTTPX_ZIP" "$HTTPX_URL"
 
-# Create a temporary directory
-TMP_DIR=$(mktemp -d)
-echo "Extracting to temporary directory: $TMP_DIR"
-
-# Extract the zip file to the temp directory
-unzip -o "$HTTPX_ZIP" -d "$TMP_DIR"
-
-# Move the httpx binary to the layer directory
-echo "Moving httpx binary to layer directory"
-cp "$TMP_DIR/httpx" "layers/httpx/opt/"
-
-# Make sure the binary is executable
+# Extract the httpx binary directly into the layer directory
+echo "Extracting httpx..."
+unzip -j "$HTTPX_ZIP" "httpx" -d "layers/httpx/opt/"
 chmod +x "layers/httpx/opt/httpx"
 
-# Clean up
-echo "Cleaning up temporary files"
-rm -rf "$TMP_DIR"
-rm "$HTTPX_ZIP"
+# Check if the binary is there and executable
+if [ ! -x "layers/httpx/opt/httpx" ]; then
+  echo "Error: httpx binary is not executable or missing"
+  exit 1
+else
+  echo "Verified httpx binary is executable at layers/httpx/opt/httpx"
+  ls -la "layers/httpx/opt/httpx"
+fi
+
+# Create a simple shell script wrapper to help with troubleshooting
+cat > "layers/httpx/opt/httpx-wrapper.sh" << 'EOF'
+#!/bin/bash
+echo "httpx-wrapper.sh called with args: $@" >> /tmp/httpx-debug.log
+export PATH=$PATH:/opt:/opt/bin
+which httpx >> /tmp/httpx-debug.log 2>&1
+/opt/httpx "$@"
+EOF
+chmod +x "layers/httpx/opt/httpx-wrapper.sh"
 
 # Create the layer ZIP file
 echo "Creating httpx layer ZIP file"
 (cd layers/httpx && zip -r ../../dist/httpx-layer.zip opt)
+
+# Clean up
+rm "$HTTPX_ZIP"
 
 echo "Build complete!"
