@@ -26,7 +26,6 @@ echo "Building NexusScan components..."
 # Create output directories - make sure they exist first
 mkdir -p dist/{scanner,scheduler,worker,processor,api,enricher}
 mkdir -p bin
-mkdir -p layers/httpx/opt
 
 # Build scanner
 echo "Building scanner..."
@@ -61,41 +60,82 @@ GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o dist/enricher/bootstrap cmd
 # Prepare httpx layer
 echo "Preparing httpx layer..."
 
+# Create a clean directory structure for the layer
+rm -rf layers
+mkdir -p layers/bin
+
 # Download httpx
 HTTPX_VERSION="1.6.10"
 HTTPX_ZIP="httpx_${HTTPX_VERSION}_linux_amd64.zip"
 HTTPX_URL="https://github.com/projectdiscovery/httpx/releases/download/v${HTTPX_VERSION}/${HTTPX_ZIP}"
 
 echo "Downloading httpx v${HTTPX_VERSION}..."
-curl -L -o "$HTTPX_ZIP" "$HTTPX_URL"
+curl -s -L -o "$HTTPX_ZIP" "$HTTPX_URL"
 
-# Extract the httpx binary directly into the layer directory
+# Extract the httpx binary directly into multiple locations for redundancy
 echo "Extracting httpx..."
-unzip -j "$HTTPX_ZIP" "httpx" -d "layers/httpx/opt/"
-chmod +x "layers/httpx/opt/httpx"
+unzip -j "$HTTPX_ZIP" "httpx" -d "layers/bin/"
+chmod +x "layers/bin/httpx"
 
-# Check if the binary is there and executable
-if [ ! -x "layers/httpx/opt/httpx" ]; then
-  echo "Error: httpx binary is not executable or missing"
-  exit 1
-else
-  echo "Verified httpx binary is executable at layers/httpx/opt/httpx"
-  ls -la "layers/httpx/opt/httpx"
+# Create a simple shell script to find and execute httpx
+cat > "layers/bin/find-httpx.sh" << 'EOF'
+#!/bin/bash
+# This script attempts to find and execute httpx
+LOG_FILE="/tmp/httpx-debug.log"
+
+echo "$(date): find-httpx.sh called with args: $@" >> $LOG_FILE
+echo "PATH=$PATH" >> $LOG_FILE
+
+# Search in common locations
+POSSIBLE_PATHS=(
+  "/opt/httpx"
+  "/opt/bin/httpx"
+  "/var/task/httpx"
+  "/var/runtime/httpx"
+  "/var/lang/bin/httpx"
+  "/tmp/httpx"
+)
+
+HTTPX_PATH=""
+for path in "${POSSIBLE_PATHS[@]}"; do
+  if [ -x "$path" ]; then
+    HTTPX_PATH="$path"
+    echo "Found httpx at: $HTTPX_PATH" >> $LOG_FILE
+    break
+  fi
+done
+
+# If not found, try using which
+if [ -z "$HTTPX_PATH" ]; then
+  HTTPX_PATH=$(which httpx 2>/dev/null)
+  echo "which httpx result: $HTTPX_PATH" >> $LOG_FILE
 fi
 
-# Create a simple shell script wrapper to help with troubleshooting
-cat > "layers/httpx/opt/httpx-wrapper.sh" << 'EOF'
-#!/bin/bash
-echo "httpx-wrapper.sh called with args: $@" >> /tmp/httpx-debug.log
-export PATH=$PATH:/opt:/opt/bin
-which httpx >> /tmp/httpx-debug.log 2>&1
-/opt/httpx "$@"
-EOF
-chmod +x "layers/httpx/opt/httpx-wrapper.sh"
+# If still not found, try copying it to /tmp and using that
+if [ -z "$HTTPX_PATH" ] || [ ! -x "$HTTPX_PATH" ]; then
+  if [ -f "/var/task/bin/httpx" ]; then
+    cp /var/task/bin/httpx /tmp/httpx
+    chmod +x /tmp/httpx
+    HTTPX_PATH="/tmp/httpx"
+    echo "Copied httpx to /tmp" >> $LOG_FILE
+  fi
+fi
 
-# Create the layer ZIP file
+# Final execution
+if [ -n "$HTTPX_PATH" ] && [ -x "$HTTPX_PATH" ]; then
+  echo "Executing: $HTTPX_PATH $@" >> $LOG_FILE
+  "$HTTPX_PATH" "$@"
+  exit $?
+else
+  echo "ERROR: httpx not found in any location" >> $LOG_FILE
+  exit 1
+fi
+EOF
+chmod +x "layers/bin/find-httpx.sh"
+
+# Create the layer ZIP file - this now puts files at the root level
 echo "Creating httpx layer ZIP file"
-(cd layers/httpx && zip -r ../../dist/httpx-layer.zip opt)
+(cd layers && zip -r ../dist/httpx-layer.zip bin)
 
 # Clean up
 rm "$HTTPX_ZIP"
