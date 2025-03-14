@@ -1,5 +1,3 @@
-// cmd/api/main.go
-
 package main
 
 import (
@@ -11,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"os"
+	"sort"
 	"time"
 
 	"github.com/aws/aws-lambda-go/events"
@@ -198,6 +197,94 @@ func getIPs(ctx context.Context, limit int, offset int) (Response, error) {
 	}, nil
 }
 
+// Enrichment
+// startEnrichment initiates an enrichment for an IP's open ports
+func startEnrichment(ctx context.Context, ipAddress string, scanID string) (Response, error) {
+	// Initialize AWS clients
+	cfg, err := config.LoadDefaultConfig(ctx)
+	if err != nil {
+		return errorResponse(http.StatusInternalServerError, fmt.Sprintf("Error loading AWS config: %v", err))
+	}
+	
+	// Create database client
+	db := database.NewClient(cfg)
+	
+	// Get open ports for the IP
+	openPorts, err := db.GetOpenPorts(ctx, ipAddress)
+	if err != nil {
+		return errorResponse(http.StatusInternalServerError, fmt.Sprintf("Error getting open ports: %v", err))
+	}
+	
+	if len(openPorts) == 0 {
+		return errorResponse(http.StatusBadRequest, "No open ports found for this IP")
+	}
+	
+	// If no scanID provided, generate one
+	if scanID == "" {
+		scanID = fmt.Sprintf("manual-scan-%s-%d", ipAddress, time.Now().Unix())
+	}
+	
+	// Get enricher function name
+	enricherFunction := os.Getenv("ENRICHER_FUNCTION")
+	if enricherFunction == "" {
+		enricherFunction = "nexusscan-enricher" // Default name if not set
+	}
+	
+	// Create Lambda client
+	lambdaClient := lambdaService.NewFromConfig(cfg)
+	
+	// Create enricher request
+	request := struct {
+		IPAddress     string `json:"ipAddress"`
+		ScanID        string `json:"scanId"`
+		OpenPorts     []int  `json:"openPorts"`
+		ImmediateMode bool   `json:"immediateMode"`
+	}{
+		IPAddress:     ipAddress,
+		ScanID:        scanID,
+		OpenPorts:     openPorts,
+		ImmediateMode: true,
+	}
+	
+	// Convert to JSON
+	payload, err := json.Marshal(request)
+	if err != nil {
+		return errorResponse(http.StatusInternalServerError, fmt.Sprintf("Error marshaling request: %v", err))
+	}
+	
+	// Invoke Lambda function
+	_, err = lambdaClient.Invoke(ctx, &lambdaService.InvokeInput{
+		FunctionName:   aws.String(enricherFunction),
+		Payload:        payload,
+		InvocationType: lambdaTypes.InvocationTypeEvent, // Asynchronous invocation
+	})
+	
+	if err != nil {
+		return errorResponse(http.StatusInternalServerError, fmt.Sprintf("Error invoking enricher: %v", err))
+	}
+	
+	// Create success response
+	response := struct {
+		Message   string `json:"message"`
+		IP        string `json:"ip"`
+		ScanID    string `json:"scanId"`
+		PortCount int    `json:"portCount"`
+	}{
+		Message:   "Enrichment started successfully",
+		IP:        ipAddress,
+		ScanID:    scanID,
+		PortCount: len(openPorts),
+	}
+	
+	responseJSON, _ := json.Marshal(response)
+	
+	return Response{
+		StatusCode: http.StatusOK,
+		Headers:    map[string]string{"Content-Type": "application/json"},
+		Body:       string(responseJSON),
+	}, nil
+}
+
 // Schedule Management Endpoints
 
 // addSchedule adds a scan schedule for an IP
@@ -363,7 +450,6 @@ func getScheduleByID(ctx context.Context, scheduleID string) (Response, error) {
     }, nil
 }
 
-// addSchedules adds scan schedules for multiple IPs
 // addSchedules adds scan schedules for multiple IPs
 func addSchedules(ctx context.Context, ips []string, scheduleType string, portSet string, enabled bool) (Response, error) {
     // Initialize AWS clients
@@ -563,6 +649,495 @@ func deleteSchedule(ctx context.Context, scheduleID string) (Response, error) {
         Body:       string(responseJSON),
     }, nil
 }
+
+// Enrichment
+// getEnrichmentResults retrieves enrichment results for an IP
+func getEnrichmentResults(ctx context.Context, ipAddress string, limit int, format string) (Response, error) {
+	// Initialize AWS clients
+	cfg, err := config.LoadDefaultConfig(ctx)
+	if err != nil {
+		return errorResponse(http.StatusInternalServerError, fmt.Sprintf("Error loading AWS config: %v", err))
+	}
+	
+	// Create database client
+	db := database.NewClient(cfg)
+	
+	// Get enrichment results
+	results, err := db.GetEnrichmentResults(ctx, ipAddress, limit)
+	if err != nil {
+		return errorResponse(http.StatusInternalServerError, fmt.Sprintf("Error getting enrichment results: %v", err))
+	}
+	
+	// Format the results based on the requested format
+	var response interface{}
+	
+	if format == "full" {
+		// Return full details for each scan
+		response = struct {
+			IP      string                 `json:"ip"`
+			Results []database.HttpxEnrichment `json:"results"`
+			Count   int                    `json:"count"`
+		}{
+			IP:      ipAddress,
+			Results: results,
+			Count:   len(results),
+		}
+	} else {
+		// Return simplified results grouped by port
+		type SimplifiedResult struct {
+			Port         int      `json:"port"`
+			ServiceName  string   `json:"serviceName,omitempty"`
+			URLs         []string `json:"urls"`
+			WebServer    string   `json:"webServer,omitempty"`
+			Title        string   `json:"title,omitempty"`
+			StatusCode   int      `json:"statusCode,omitempty"`
+			Technologies []string `json:"technologies,omitempty"`
+			HasTLS       bool     `json:"hasTLS"`
+			TLSIssues    []string `json:"tlsIssues,omitempty"`
+			LastScanned  string   `json:"lastScanned"`
+		}
+
+		// Group scan results by port
+		portMap := make(map[int]*SimplifiedResult)
+		var lastScanned string
+		
+		for _, result := range results {
+			if lastScanned == "" || result.Timestamp > lastScanned {
+				lastScanned = result.Timestamp
+			}
+			
+			for _, port := range result.EnrichedPorts {
+				// Extract port number from URL
+				portStr := port.Port
+				if portStr == "" {
+					// Try to parse from URL
+					urlParts := strings.Split(port.URL, ":")
+					if len(urlParts) > 2 {
+						portStr = strings.Split(urlParts[2], "/")[0]
+					}
+				}
+				
+				portNum, err := strconv.Atoi(portStr)
+				if err != nil {
+					continue
+				}
+				
+				if _, exists := portMap[portNum]; !exists {
+					portMap[portNum] = &SimplifiedResult{
+						Port:        portNum,
+						URLs:        []string{},
+						LastScanned: result.Timestamp,
+						HasTLS:      false,
+					}
+				}
+				
+				// Add URL if not already in the list
+				urlFound := false
+				for _, u := range portMap[portNum].URLs {
+					if u == port.URL {
+						urlFound = true
+						break
+					}
+				}
+				if !urlFound {
+					portMap[portNum].URLs = append(portMap[portNum].URLs, port.URL)
+				}
+				
+				// Update other fields if they're not set
+				if portMap[portNum].WebServer == "" && port.ServerHeader != "" {
+					portMap[portNum].WebServer = port.ServerHeader
+				}
+				
+				if portMap[portNum].Title == "" && port.Title != "" {
+					portMap[portNum].Title = port.Title
+				}
+				
+				if portMap[portNum].StatusCode == 0 && port.StatusCode != 0 {
+					portMap[portNum].StatusCode = port.StatusCode
+				}
+				
+				// Add technologies if not already in the list
+				for _, tech := range port.Technologies {
+					found := false
+					for _, t := range portMap[portNum].Technologies {
+						if t == tech {
+							found = true
+							break
+						}
+					}
+					if !found {
+						portMap[portNum].Technologies = append(portMap[portNum].Technologies, tech)
+					}
+				}
+				
+				// Check TLS information
+				if port.TLS.Cipher != "" {
+					portMap[portNum].HasTLS = true
+					
+					// Add TLS issues if any
+					if port.TLS.Expired {
+						portMap[portNum].TLSIssues = append(portMap[portNum].TLSIssues, "Expired Certificate")
+					}
+					if port.TLS.SelfSigned {
+						portMap[portNum].TLSIssues = append(portMap[portNum].TLSIssues, "Self-Signed Certificate")
+					}
+					if port.TLS.Mismatched {
+						portMap[portNum].TLSIssues = append(portMap[portNum].TLSIssues, "Hostname Mismatch")
+					}
+				}
+			}
+		}
+		
+		// Convert map to slice
+		simplifiedResults := make([]SimplifiedResult, 0, len(portMap))
+		for _, v := range portMap {
+			simplifiedResults = append(simplifiedResults, *v)
+		}
+		
+		// Sort by port number
+		sort.Slice(simplifiedResults, func(i, j int) bool {
+			return simplifiedResults[i].Port < simplifiedResults[j].Port
+		})
+		
+		response = struct {
+			IP      string             `json:"ip"`
+			Results []SimplifiedResult `json:"ports"`
+			Count   int                `json:"count"`
+			LastScanned string         `json:"lastScanned"`
+		}{
+			IP:      ipAddress,
+			Results: simplifiedResults,
+			Count:   len(simplifiedResults),
+			LastScanned: lastScanned,
+		}
+	}
+	
+	responseJSON, _ := json.Marshal(response)
+	
+	return Response{
+		StatusCode: http.StatusOK,
+		Headers:    map[string]string{"Content-Type": "application/json"},
+		Body:       string(responseJSON),
+	}, nil
+}
+
+// getEnrichmentResultByScan retrieves enrichment result for a specific scan
+func getEnrichmentResultByScan(ctx context.Context, ipAddress string, scanID string, format string) (Response, error) {
+	// Initialize AWS clients
+	cfg, err := config.LoadDefaultConfig(ctx)
+	if err != nil {
+		return errorResponse(http.StatusInternalServerError, fmt.Sprintf("Error loading AWS config: %v", err))
+	}
+	
+	// Create database client
+	db := database.NewClient(cfg)
+	
+	// Get enrichment result
+	result, err := db.GetEnrichmentResultByScan(ctx, ipAddress, scanID)
+	if err != nil {
+		return errorResponse(http.StatusNotFound, fmt.Sprintf("Enrichment result not found: %v", err))
+	}
+	
+	// If format is not "full", convert to simplified format
+	if format != "full" {
+		// Return simplified results grouped by port
+		type SimplifiedResult struct {
+			Port         int      `json:"port"`
+			ServiceName  string   `json:"serviceName,omitempty"`
+			URLs         []string `json:"urls"`
+			WebServer    string   `json:"webServer,omitempty"`
+			Title        string   `json:"title,omitempty"`
+			StatusCode   int      `json:"statusCode,omitempty"`
+			Technologies []string `json:"technologies,omitempty"`
+			HasTLS       bool     `json:"hasTLS"`
+			TLSIssues    []string `json:"tlsIssues,omitempty"`
+		}
+
+		// Group scan results by port
+		portMap := make(map[int]*SimplifiedResult)
+		
+		for _, port := range result.EnrichedPorts {
+			// Extract port number from URL
+			portStr := port.Port
+			if portStr == "" {
+				// Try to parse from URL
+				urlParts := strings.Split(port.URL, ":")
+				if len(urlParts) > 2 {
+					portStr = strings.Split(urlParts[2], "/")[0]
+				}
+			}
+			
+			portNum, err := strconv.Atoi(portStr)
+			if err != nil {
+				continue
+			}
+			
+			if _, exists := portMap[portNum]; !exists {
+				portMap[portNum] = &SimplifiedResult{
+					Port:        portNum,
+					URLs:        []string{},
+					HasTLS:      false,
+				}
+			}
+			
+			// Add URL if not already in the list
+			urlFound := false
+			for _, u := range portMap[portNum].URLs {
+				if u == port.URL {
+					urlFound = true
+					break
+				}
+			}
+			if !urlFound {
+				portMap[portNum].URLs = append(portMap[portNum].URLs, port.URL)
+			}
+			
+			// Update other fields if they're not set
+			if portMap[portNum].WebServer == "" && port.ServerHeader != "" {
+				portMap[portNum].WebServer = port.ServerHeader
+			}
+			
+			if portMap[portNum].Title == "" && port.Title != "" {
+				portMap[portNum].Title = port.Title
+			}
+			
+			if portMap[portNum].StatusCode == 0 && port.StatusCode != 0 {
+				portMap[portNum].StatusCode = port.StatusCode
+			}
+			
+			// Add technologies if not already in the list
+			for _, tech := range port.Technologies {
+				found := false
+				for _, t := range portMap[portNum].Technologies {
+					if t == tech {
+						found = true
+						break
+					}
+				}
+				if !found {
+					portMap[portNum].Technologies = append(portMap[portNum].Technologies, tech)
+				}
+			}
+			
+			// Check TLS information
+			if port.TLS.Cipher != "" {
+				portMap[portNum].HasTLS = true
+				
+				// Add TLS issues if any
+				if port.TLS.Expired {
+					portMap[portNum].TLSIssues = append(portMap[portNum].TLSIssues, "Expired Certificate")
+				}
+				if port.TLS.SelfSigned {
+					portMap[portNum].TLSIssues = append(portMap[portNum].TLSIssues, "Self-Signed Certificate")
+				}
+				if port.TLS.Mismatched {
+					portMap[portNum].TLSIssues = append(portMap[portNum].TLSIssues, "Hostname Mismatch")
+				}
+			}
+		}
+		
+		// Convert map to slice
+		simplifiedResults := make([]SimplifiedResult, 0, len(portMap))
+		for _, v := range portMap {
+			simplifiedResults = append(simplifiedResults, *v)
+		}
+		
+		// Sort by port number
+		sort.Slice(simplifiedResults, func(i, j int) bool {
+			return simplifiedResults[i].Port < simplifiedResults[j].Port
+		})
+		
+		response := struct {
+			IP        string             `json:"ip"`
+			ScanID    string             `json:"scanId"`
+			Timestamp string             `json:"timestamp"`
+			Ports     []SimplifiedResult `json:"ports"`
+			Count     int                `json:"count"`
+		}{
+			IP:        result.IPAddress,
+			ScanID:    result.ScanID,
+			Timestamp: result.Timestamp,
+			Ports:     simplifiedResults,
+			Count:     len(simplifiedResults),
+		}
+		
+		responseJSON, _ := json.Marshal(response)
+		
+		return Response{
+			StatusCode: http.StatusOK,
+			Headers:    map[string]string{"Content-Type": "application/json"},
+			Body:       string(responseJSON),
+		}, nil
+	}
+	
+	responseJSON, _ := json.Marshal(result)
+	
+	return Response{
+		StatusCode: http.StatusOK,
+		Headers:    map[string]string{"Content-Type": "application/json"},
+		Body:       string(responseJSON),
+	}, nil
+}
+
+
+// getLatestEnrichmentResult retrieves the latest enrichment result for an IP
+func getLatestEnrichmentResult(ctx context.Context, ipAddress string, format string) (Response, error) {
+	// Initialize AWS clients
+	cfg, err := config.LoadDefaultConfig(ctx)
+	if err != nil {
+		return errorResponse(http.StatusInternalServerError, fmt.Sprintf("Error loading AWS config: %v", err))
+	}
+	
+	// Create database client
+	db := database.NewClient(cfg)
+	
+	// Get latest enrichment result
+	result, err := db.GetLatestEnrichmentResult(ctx, ipAddress)
+	if err != nil {
+		return errorResponse(http.StatusNotFound, fmt.Sprintf("Enrichment result not found: %v", err))
+	}
+	
+	// If format is not "full", convert to simplified format
+	if format != "full" {
+		// Return simplified results grouped by port
+		type SimplifiedResult struct {
+			Port         int      `json:"port"`
+			ServiceName  string   `json:"serviceName,omitempty"`
+			URLs         []string `json:"urls"`
+			WebServer    string   `json:"webServer,omitempty"`
+			Title        string   `json:"title,omitempty"`
+			StatusCode   int      `json:"statusCode,omitempty"`
+			Technologies []string `json:"technologies,omitempty"`
+			HasTLS       bool     `json:"hasTLS"`
+			TLSIssues    []string `json:"tlsIssues,omitempty"`
+		}
+
+		// Group scan results by port
+		portMap := make(map[int]*SimplifiedResult)
+		
+		for _, port := range result.EnrichedPorts {
+			// Extract port number from URL
+			portStr := port.Port
+			if portStr == "" {
+				// Try to parse from URL
+				urlParts := strings.Split(port.URL, ":")
+				if len(urlParts) > 2 {
+					portStr = strings.Split(urlParts[2], "/")[0]
+				}
+			}
+			
+			portNum, err := strconv.Atoi(portStr)
+			if err != nil {
+				continue
+			}
+			
+			if _, exists := portMap[portNum]; !exists {
+				portMap[portNum] = &SimplifiedResult{
+					Port:        portNum,
+					URLs:        []string{},
+					HasTLS:      false,
+				}
+			}
+			
+			// Add URL if not already in the list
+			urlFound := false
+			for _, u := range portMap[portNum].URLs {
+				if u == port.URL {
+					urlFound = true
+					break
+				}
+			}
+			if !urlFound {
+				portMap[portNum].URLs = append(portMap[portNum].URLs, port.URL)
+			}
+			
+			// Update other fields if they're not set
+			if portMap[portNum].WebServer == "" && port.ServerHeader != "" {
+				portMap[portNum].WebServer = port.ServerHeader
+			}
+			
+			if portMap[portNum].Title == "" && port.Title != "" {
+				portMap[portNum].Title = port.Title
+			}
+			
+			if portMap[portNum].StatusCode == 0 && port.StatusCode != 0 {
+				portMap[portNum].StatusCode = port.StatusCode
+			}
+			
+			// Add technologies if not already in the list
+			for _, tech := range port.Technologies {
+				found := false
+				for _, t := range portMap[portNum].Technologies {
+					if t == tech {
+						found = true
+						break
+					}
+				}
+				if !found {
+					portMap[portNum].Technologies = append(portMap[portNum].Technologies, tech)
+				}
+			}
+			
+			// Check TLS information
+			if port.TLS.Cipher != "" {
+				portMap[portNum].HasTLS = true
+				
+				// Add TLS issues if any
+				if port.TLS.Expired {
+					portMap[portNum].TLSIssues = append(portMap[portNum].TLSIssues, "Expired Certificate")
+				}
+				if port.TLS.SelfSigned {
+					portMap[portNum].TLSIssues = append(portMap[portNum].TLSIssues, "Self-Signed Certificate")
+				}
+				if port.TLS.Mismatched {
+					portMap[portNum].TLSIssues = append(portMap[portNum].TLSIssues, "Hostname Mismatch")
+				}
+			}
+		}
+		
+		// Convert map to slice
+		simplifiedResults := make([]SimplifiedResult, 0, len(portMap))
+		for _, v := range portMap {
+			simplifiedResults = append(simplifiedResults, *v)
+		}
+		
+		// Sort by port number
+		sort.Slice(simplifiedResults, func(i, j int) bool {
+			return simplifiedResults[i].Port < simplifiedResults[j].Port
+		})
+		
+		response := struct {
+			IP        string             `json:"ip"`
+			ScanID    string             `json:"scanId"`
+			Timestamp string             `json:"timestamp"`
+			Ports     []SimplifiedResult `json:"ports"`
+			Count     int                `json:"count"`
+		}{
+			IP:        result.IPAddress,
+			ScanID:    result.ScanID,
+			Timestamp: result.Timestamp,
+			Ports:     simplifiedResults,
+			Count:     len(simplifiedResults),
+		}
+		
+		responseJSON, _ := json.Marshal(response)
+		
+		return Response{
+			StatusCode: http.StatusOK,
+			Headers:    map[string]string{"Content-Type": "application/json"},
+			Body:       string(responseJSON),
+		}, nil
+	}
+	
+	responseJSON, _ := json.Marshal(result)
+	
+	return Response{
+		StatusCode: http.StatusOK,
+		Headers:    map[string]string{"Content-Type": "application/json"},
+		Body:       string(responseJSON),
+	}, nil
+}
+
 
 // Scan Management Endpoints
 
@@ -830,6 +1405,148 @@ func HandleRequest(ctx context.Context, request events.APIGatewayProxyRequest) (
 	// Basic routing
 	if len(pathParts) >= 2 && pathParts[0] == "api" {
 		switch pathParts[1] {
+case "enrichment-results":
+	// GET /api/enrichment-results/{ip}?limit=5&format=full
+	if request.HTTPMethod == "GET" && len(pathParts) >= 3 {
+		ipAddress := pathParts[2]
+		
+		// Parse limit query parameter
+		limit := 10 // Default
+		if limitStr, ok := request.QueryStringParameters["limit"]; ok {
+			if parsedLimit, err := strconv.Atoi(limitStr); err == nil && parsedLimit > 0 {
+				limit = parsedLimit
+			}
+		}
+		
+		// Parse format query parameter
+		format := "simple" // Default
+		if formatStr, ok := request.QueryStringParameters["format"]; ok {
+			if formatStr == "full" {
+				format = "full"
+			}
+		}
+		
+		// Get enrichment results
+		response, err := getEnrichmentResults(ctx, ipAddress, limit, format)
+		if err != nil {
+			return events.APIGatewayProxyResponse{
+				StatusCode: response.StatusCode,
+				Headers:    response.Headers,
+				Body:       response.Body,
+			}, nil
+		}
+		
+		return events.APIGatewayProxyResponse{
+			StatusCode: response.StatusCode,
+			Headers:    response.Headers,
+			Body:       response.Body,
+		}, nil
+	}
+	
+case "enrichment-scan":
+	// GET /api/enrichment-scan/{ip}/{scanId}?format=full
+	if request.HTTPMethod == "GET" && len(pathParts) >= 4 {
+		ipAddress := pathParts[2]
+		scanID := pathParts[3]
+		
+		// Parse format query parameter
+		format := "simple" // Default
+		if formatStr, ok := request.QueryStringParameters["format"]; ok {
+			if formatStr == "full" {
+				format = "full"
+			}
+		}
+		
+		// Get enrichment result for specific scan
+		response, err := getEnrichmentResultByScan(ctx, ipAddress, scanID, format)
+		if err != nil {
+			return events.APIGatewayProxyResponse{
+				StatusCode: response.StatusCode,
+				Headers:    response.Headers,
+				Body:       response.Body,
+			}, nil
+		}
+		
+		return events.APIGatewayProxyResponse{
+			StatusCode: response.StatusCode,
+			Headers:    response.Headers,
+			Body:       response.Body,
+		}, nil
+	}
+	
+case "latest-enrichment":
+	// GET /api/latest-enrichment/{ip}?format=full
+	if request.HTTPMethod == "GET" && len(pathParts) >= 3 {
+		ipAddress := pathParts[2]
+		
+		// Parse format query parameter
+		format := "simple" // Default
+		if formatStr, ok := request.QueryStringParameters["format"]; ok {
+			if formatStr == "full" {
+				format = "full"
+			}
+		}
+		
+		// Get latest enrichment result
+		response, err := getLatestEnrichmentResult(ctx, ipAddress, format)
+		if err != nil {
+			return events.APIGatewayProxyResponse{
+				StatusCode: response.StatusCode,
+				Headers:    response.Headers,
+				Body:       response.Body,
+			}, nil
+		}
+		
+		return events.APIGatewayProxyResponse{
+			StatusCode: response.StatusCode,
+			Headers:    response.Headers,
+			Body:       response.Body,
+		}, nil
+	}
+case "enrich":
+	// POST /api/enrich
+	if request.HTTPMethod == "POST" {
+		// Parse request body
+		var enrichRequest struct {
+			IP     string `json:"ip"`
+			ScanID string `json:"scanId,omitempty"`
+		}
+		
+		if err := json.Unmarshal([]byte(request.Body), &enrichRequest); err != nil {
+			response, _ := errorResponse(http.StatusBadRequest, "Invalid request body")
+			return events.APIGatewayProxyResponse{
+				StatusCode: response.StatusCode,
+				Headers:    response.Headers,
+				Body:       response.Body,
+			}, nil
+		}
+		
+		// Validate IP address
+		if enrichRequest.IP == "" {
+			response, _ := errorResponse(http.StatusBadRequest, "IP address is required")
+			return events.APIGatewayProxyResponse{
+				StatusCode: response.StatusCode,
+				Headers:    response.Headers,
+				Body:       response.Body,
+			}, nil
+		}
+		
+		// Start enrichment
+		response, err := startEnrichment(ctx, enrichRequest.IP, enrichRequest.ScanID)
+		if err != nil {
+			return events.APIGatewayProxyResponse{
+				StatusCode: response.StatusCode,
+				Headers:    response.Headers,
+				Body:       response.Body,
+			}, nil
+		}
+		
+		return events.APIGatewayProxyResponse{
+			StatusCode: response.StatusCode,
+			Headers:    response.Headers,
+			Body:       response.Body,
+		}, nil
+	}
 		// IP Management
 		case "ip":
 			// POST /api/ip

@@ -119,6 +119,9 @@ Resources:
       CodeUri: ./dist/processor.zip
       MemorySize: 512
       Timeout: 300
+      Environment:
+        Variables:
+          ENRICHER_FUNCTION: !Ref EnricherFunction
       Events:
         SQSEvent:
           Type: SQS
@@ -133,6 +136,64 @@ Resources:
             TableName: !Ref OpenPortsTable
         - DynamoDBCrudPolicy:
             TableName: !Ref IPsTable
+        - LambdaInvokePolicy:
+            FunctionName: !Ref EnricherFunction
+
+  # New Enricher Lambda function
+
+  EnricherFunction:
+    Type: 'AWS::Serverless::Function'
+    Properties:
+      FunctionName: nexusscan-enricher
+      Handler: bootstrap
+      Runtime: provided.al2
+      CodeUri: ./dist/enricher.zip
+      MemorySize: 1024
+      Timeout: 300
+      Layers:
+        - !Ref HttpxLayer
+      Environment:
+        Variables:
+          HTTPX_PATH: /opt/bin/httpx
+          PATH: /var/lang/bin:/usr/local/bin:/usr/bin/:/bin:/opt:/opt/bin
+      Policies:
+        - AWSLambdaBasicExecutionRole
+        - DynamoDBCrudPolicy:
+            TableName: !Ref EnrichmentTable
+
+  # Layer for httpx binary
+  HttpxLayer:
+    Type: 'AWS::Serverless::LayerVersion'
+    Properties:
+      LayerName: httpx-binary
+      Description: Contains httpx binary from ProjectDiscovery
+      ContentUri: ./dist/httpx-layer.zip  # Updated path to match build script output
+      CompatibleRuntimes:
+        - provided.al2
+      RetentionPolicy: Retain
+
+  # DynamoDB Table for enrichment results
+  EnrichmentTable:
+    Type: 'AWS::DynamoDB::Table'
+    Properties:
+      TableName: nexusscan-enrichment
+      BillingMode: PROVISIONED
+      ProvisionedThroughput:
+        ReadCapacityUnits: 20
+        WriteCapacityUnits: 10
+      AttributeDefinitions:
+        - AttributeName: IPAddress
+          AttributeType: S
+        - AttributeName: Timestamp
+          AttributeType: S
+      KeySchema:
+        - AttributeName: IPAddress
+          KeyType: HASH
+        - AttributeName: Timestamp
+          KeyType: RANGE
+      TimeToLiveSpecification:
+        AttributeName: ExpirationTime
+        Enabled: true
 
   ApiFunction:
     Type: 'AWS::Serverless::Function'
@@ -146,6 +207,7 @@ Resources:
       Environment:
         Variables:
           SCHEDULER_FUNCTION: !Ref SchedulerFunction
+          ENRICHER_FUNCTION: !Ref EnricherFunction
       Events:
         ApiEvent:
           Type: Api
@@ -163,8 +225,12 @@ Resources:
             TableName: !Ref ResultsTable
         - DynamoDBCrudPolicy:
             TableName: !Ref OpenPortsTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref EnrichmentTable
         - LambdaInvokePolicy:
             FunctionName: !Ref SchedulerFunction
+        - LambdaInvokePolicy:
+            FunctionName: !Ref EnricherFunction
 
   # DynamoDB Tables
   IPsTable:

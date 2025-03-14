@@ -59,15 +59,50 @@ func (c *Client) AddIP(ctx context.Context, ipAddress string) error {
 
 
 // StoreFinalScanSummary stores a final summary of a completed scan with all discovered ports
-func (c *Client) StoreFinalScanSummary(ctx context.Context, ipAddress string, scanID string, openPorts []models.Port, scanDuration time.Duration, portsScanned int) error {
+func (c *Client) StoreFinalScanSummary(ctx context.Context, ipAddress string, scanID string, 
+    openPorts []models.Port, scanDuration time.Duration, portsScanned int, 
+    useHistoricalPorts bool) error {
+    
     timestamp := time.Now().Format(time.RFC3339)
     
+    // Determine which ports to include in the final summary
+    var finalOpenPorts []models.Port
+    
+    if useHistoricalPorts {
+        // Get previously discovered open ports to include in summary
+        completeOpenPorts, err := c.GetOpenPorts(ctx, ipAddress)
+        if err != nil {
+            log.Printf("Error getting complete open ports for IP %s: %v", ipAddress, err)
+            finalOpenPorts = openPorts // Use current ports if can't get historical
+        } else {
+            // Check if any historical ports exist
+            if len(completeOpenPorts) > 0 {
+                // Create combined list from all historical ports
+                finalOpenPorts = make([]models.Port, 0, len(completeOpenPorts))
+                for _, portNum := range completeOpenPorts {
+                    port := models.Port{
+                        Number:  portNum,
+                        State:   "open",
+                        Latency: 1 * time.Millisecond,
+                    }
+                    finalOpenPorts = append(finalOpenPorts, port)
+                }
+            } else {
+                // No historical ports, use current scan
+                finalOpenPorts = openPorts
+            }
+        }
+    } else {
+        // Use only the ports from the current scan
+        finalOpenPorts = openPorts
+    }
+    
     // Debug output to see what we're trying to store
-    log.Printf("Final summary for %s with %d ports: %+v", ipAddress, len(openPorts), openPorts)
+    log.Printf("Final summary for %s with %d ports: %+v", ipAddress, len(finalOpenPorts), finalOpenPorts)
     
     // Create a simplified version of open ports with just the essential fields
-    simplifiedPorts := make([]map[string]interface{}, 0, len(openPorts))
-    for _, port := range openPorts {
+    simplifiedPorts := make([]map[string]interface{}, 0, len(finalOpenPorts))
+    for _, port := range finalOpenPorts {
         simplifiedPorts = append(simplifiedPorts, map[string]interface{}{
             "number": port.Number,
             "state": "open",
@@ -96,10 +131,10 @@ func (c *Client) StoreFinalScanSummary(ctx context.Context, ipAddress string, sc
     }
     
     // Add open ports if there are any
-    if len(openPorts) > 0 {
+    if len(finalOpenPorts) > 0 {
         // Create a list of OpenPorts attributes manually
-        portsList := make([]types.AttributeValue, 0, len(openPorts))
-        for _, port := range openPorts {
+        portsList := make([]types.AttributeValue, 0, len(finalOpenPorts))
+        for _, port := range finalOpenPorts {
             portMap := map[string]types.AttributeValue{
                 "number": &types.AttributeValueMemberN{Value: strconv.Itoa(port.Number)},
                 "state":  &types.AttributeValueMemberS{Value: "open"},
@@ -121,11 +156,12 @@ func (c *Client) StoreFinalScanSummary(ctx context.Context, ipAddress string, sc
     if err != nil {
         log.Printf("Error storing final scan summary: %v", err)
     } else {
-        log.Printf("Successfully stored final scan summary for %s with %d ports", ipAddress, len(openPorts))
+        log.Printf("Successfully stored final scan summary for %s with %d ports", ipAddress, len(finalOpenPorts))
     }
     
     return err
 }
+
 
 
 // DeleteIP removes an IP address from the database
@@ -155,6 +191,11 @@ func (c *Client) DeleteIP(ctx context.Context, ipAddress string) error {
     })
     if err != nil {
         log.Printf("Error deleting open ports for IP %s: %v", ipAddress, err)
+    }
+    
+    // Delete enrichment data for this IP
+    if err := c.DeleteIPEnrichments(ctx, ipAddress); err != nil {
+        log.Printf("Error deleting enrichment data for IP %s: %v", ipAddress, err)
     }
     
     // Delete all scan results for this IP
@@ -219,6 +260,7 @@ func (c *Client) DeleteIP(ctx context.Context, ipAddress string) error {
     
     return nil
 }
+
 // GetIPs retrieves all IP addresses with pagination
 func (c *Client) GetIPs(ctx context.Context, limit int, offset int) ([]models.IP, error) {
 	scanInput := &dynamodb.ScanInput{
@@ -591,49 +633,73 @@ func (c *Client) GetOpenPorts(ctx context.Context, ipAddress string) ([]int, err
 }
 
 // StoreOpenPorts saves open ports for an IP
-func (c *Client) StoreOpenPorts(ctx context.Context, ipAddress string, openPorts []int) error {
-    // First, get the existing open ports
-    existingPorts, err := c.GetOpenPorts(ctx, ipAddress)
-    if err != nil {
-        log.Printf("Error getting existing open ports for IP %s: %v", ipAddress, err)
-        // Continue with empty list if error
-        existingPorts = []int{}
-    }
-    
-    // Merge existing ports with new ones (avoiding duplicates)
-    portsMap := make(map[int]bool)
-    for _, port := range existingPorts {
-        portsMap[port] = true
-    }
-    for _, port := range openPorts {
-        portsMap[port] = true
-    }
-    
-    // Convert back to slice
-    mergedPorts := make([]int, 0, len(portsMap))
-    for port := range portsMap {
-        mergedPorts = append(mergedPorts, port)
-    }
+func (c *Client) StoreOpenPorts(ctx context.Context, ipAddress string, openPorts []int, replaceExisting bool) error {
+    // Check if we should replace existing data
+    if replaceExisting {
+        // Just store the current open ports, replacing any previous data
+        item := map[string]types.AttributeValue{
+            "IPAddress":   &types.AttributeValueMemberS{Value: ipAddress},
+            "LastUpdated": &types.AttributeValueMemberS{Value: time.Now().Format(time.RFC3339)},
+        }
+        
+        // Marshal port list
+        portsAV, err := attributevalue.Marshal(openPorts)
+        if err != nil {
+            return err
+        }
+        item["OpenPorts"] = portsAV
+        
+        _, err = c.DynamoDB.PutItem(ctx, &dynamodb.PutItemInput{
+            TableName: aws.String("nexusscan-open-ports"),
+            Item:      item,
+        })
+        
+        return err
+    } else {
+        // Original behavior - merge with existing ports
+        // First, get the existing open ports
+        existingPorts, err := c.GetOpenPorts(ctx, ipAddress)
+        if err != nil {
+            log.Printf("Error getting existing open ports for IP %s: %v", ipAddress, err)
+            // Continue with empty list if error
+            existingPorts = []int{}
+        }
+        
+        // Merge existing ports with new ones (avoiding duplicates)
+        portsMap := make(map[int]bool)
+        for _, port := range existingPorts {
+            portsMap[port] = true
+        }
+        for _, port := range openPorts {
+            portsMap[port] = true
+        }
+        
+        // Convert back to slice
+        mergedPorts := make([]int, 0, len(portsMap))
+        for port := range portsMap {
+            mergedPorts = append(mergedPorts, port)
+        }
 
-    // Update with merged ports
-    item := map[string]types.AttributeValue{
-        "IPAddress":   &types.AttributeValueMemberS{Value: ipAddress},
-        "LastUpdated": &types.AttributeValueMemberS{Value: time.Now().Format(time.RFC3339)},
-    }
-    
-    // Marshal port list
-    portsAV, err := attributevalue.Marshal(mergedPorts)
-    if err != nil {
+        // Update with merged ports
+        item := map[string]types.AttributeValue{
+            "IPAddress":   &types.AttributeValueMemberS{Value: ipAddress},
+            "LastUpdated": &types.AttributeValueMemberS{Value: time.Now().Format(time.RFC3339)},
+        }
+        
+        // Marshal port list
+        portsAV, err := attributevalue.Marshal(mergedPorts)
+        if err != nil {
+            return err
+        }
+        item["OpenPorts"] = portsAV
+        
+        _, err = c.DynamoDB.PutItem(ctx, &dynamodb.PutItemInput{
+            TableName: aws.String("nexusscan-open-ports"),
+            Item:      item,
+        })
+        
         return err
     }
-    item["OpenPorts"] = portsAV
-    
-    _, err = c.DynamoDB.PutItem(ctx, &dynamodb.PutItemInput{
-        TableName: aws.String("nexusscan-open-ports"),
-        Item:      item,
-    })
-    
-    return err
 }
 
 // StoreScanResult saves a scan result
