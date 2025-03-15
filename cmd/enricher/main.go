@@ -48,7 +48,7 @@ type HttpxResult struct {
     Lines             int                 `json:"lines,omitempty"`
     Method            string              `json:"method,omitempty"`
     Failed            bool                `json:"failed,omitempty"`
-    TLS               TLSData             `json:"tls,omitempty"`
+    TLS               TLSData             `json:"tls,omitempty" dynamodbav:"TLS"`
     Chain             []string            `json:"chain,omitempty"`
     Error             string              `json:"error,omitempty"`
     Timestamp         string              `json:"timestamp,omitempty"`
@@ -60,25 +60,26 @@ type HttpxResult struct {
 
 // TLSData contains TLS certificate information
 type TLSData struct {
-    Version               string             `json:"tls_version,omitempty"`
-    Cipher                string             `json:"cipher,omitempty"`
-    Expired               bool               `json:"expired,omitempty"`
-    SelfSigned            bool               `json:"self_signed,omitempty"`
-    Mismatched            bool               `json:"mismatched,omitempty"`
-    NotBefore             string             `json:"not_before,omitempty"`
-    NotAfter              string             `json:"not_after,omitempty"`
-    SubjectDN             string             `json:"subject_dn,omitempty"`
-    SubjectCN             string             `json:"subject_cn,omitempty"`
-    SubjectOrg            []string           `json:"subject_org,omitempty"`
-    Serial                string             `json:"serial,omitempty"`
-    IssuerDN              string             `json:"issuer_dn,omitempty"`
-    IssuerCN              string             `json:"issuer_cn,omitempty"`
-    IssuerOrg             []string           `json:"issuer_org,omitempty"`
-    FingerprintHash       map[string]string  `json:"fingerprint_hash,omitempty"`
-    TLSConnection         string             `json:"tls_connection,omitempty"`
-    Host                  string             `json:"host,omitempty"`
-    Port                  string             `json:"port,omitempty"`
-    ProbeStatus           bool               `json:"probe_status,omitempty"`
+    Version          string             `json:"tls_version,omitempty" dynamodbav:"Version"`
+    Cipher           string             `json:"cipher,omitempty" dynamodbav:"Cipher"`
+    Expired          bool               `json:"expired,omitempty" dynamodbav:"Expired"`
+    SelfSigned       bool               `json:"self_signed,omitempty" dynamodbav:"SelfSigned"`
+    Mismatched       bool               `json:"mismatched,omitempty" dynamodbav:"Mismatched"`
+    NotBefore        string             `json:"not_before,omitempty" dynamodbav:"NotBefore"`
+    NotAfter         string             `json:"not_after,omitempty" dynamodbav:"NotAfter"`
+    SubjectDN        string             `json:"subject_dn,omitempty" dynamodbav:"SubjectDN"`
+    SubjectCN        string             `json:"subject_cn,omitempty" dynamodbav:"SubjectCN"`
+    SubjectOrg       []string           `json:"subject_org,omitempty" dynamodbav:"SubjectOrg"`
+    SubjectAN        []string           `json:"subject_an,omitempty" dynamodbav:"SubjectAN"`
+    Serial           string             `json:"serial,omitempty" dynamodbav:"Serial"`
+    IssuerDN         string             `json:"issuer_dn,omitempty" dynamodbav:"IssuerDN"`
+    IssuerCN         string             `json:"issuer_cn,omitempty" dynamodbav:"IssuerCN"`
+    IssuerOrg        []string           `json:"issuer_org,omitempty" dynamodbav:"IssuerOrg"`
+    FingerprintHash  map[string]string  `json:"fingerprint_hash,omitempty" dynamodbav:"FingerprintHash"`
+    TLSConnection    string             `json:"tls_connection,omitempty" dynamodbav:"TLSConnection"`
+    Host             string             `json:"host,omitempty" dynamodbav:"Host"`
+    Port             string             `json:"port,omitempty" dynamodbav:"Port"`
+    ProbeStatus      bool               `json:"probe_status,omitempty" dynamodbav:"ProbeStatus"`
 }
 
 // EnrichmentResult stores the final output
