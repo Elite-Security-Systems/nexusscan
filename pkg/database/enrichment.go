@@ -43,7 +43,7 @@ type HttpxResult struct {
     Method            string              `json:"method,omitempty" dynamodbav:"Method,omitempty"`
     Failed            bool                `json:"failed,omitempty" dynamodbav:"Failed,omitempty"`
     ResponseHeaders   map[string]string   `json:"responseHeaders,omitempty" dynamodbav:"ResponseHeaders,omitempty"`
-    TLS               TLSData             `json:"tls,omitempty" dynamodbav:"TLSData,omitempty"`
+    TLS               TLSData             `json:"tls,omitempty" dynamodbav:"TLS"`
     Chain             []string            `json:"chain,omitempty" dynamodbav:"Chain,omitempty"`
     Error             string              `json:"error,omitempty" dynamodbav:"Error,omitempty"`
     Timestamp         string              `json:"timestamp,omitempty" dynamodbav:"Timestamp,omitempty"`
@@ -53,25 +53,26 @@ type HttpxResult struct {
 
 // TLSData contains TLS certificate information
 type TLSData struct {
-    Version               string             `json:"version,omitempty" dynamodbav:"Version,omitempty"`
-    Cipher                string             `json:"cipher,omitempty" dynamodbav:"Cipher,omitempty"`
-    CertificateIssuer     string             `json:"certificateIssuer,omitempty" dynamodbav:"CertificateIssuer,omitempty"`
-    CertificateSubject    string             `json:"certificateSubject,omitempty" dynamodbav:"CertificateSubject,omitempty"`
-    CertificateExpiration string             `json:"certificateExpiration,omitempty" dynamodbav:"CertificateExpiration,omitempty"`
-    Expired               bool               `json:"expired,omitempty" dynamodbav:"Expired,omitempty"`
-    SelfSigned            bool               `json:"selfSigned,omitempty" dynamodbav:"SelfSigned,omitempty"`
-    Mismatched            bool               `json:"mismatched,omitempty" dynamodbav:"Mismatched,omitempty"`
-    NotBefore             string             `json:"notBefore,omitempty" dynamodbav:"NotBefore,omitempty"`
-    NotAfter              string             `json:"notAfter,omitempty" dynamodbav:"NotAfter,omitempty"`
-    SubjectDN             string             `json:"subjectDN,omitempty" dynamodbav:"SubjectDN,omitempty"`
-    SubjectCN             string             `json:"subjectCN,omitempty" dynamodbav:"SubjectCN,omitempty"`
-    SubjectOrg            []string           `json:"subjectOrg,omitempty" dynamodbav:"SubjectOrg,omitempty"`
-    Serial                string             `json:"serial,omitempty" dynamodbav:"Serial,omitempty"`
-    IssuerDN              string             `json:"issuerDN,omitempty" dynamodbav:"IssuerDN,omitempty"`
-    IssuerCN              string             `json:"issuerCN,omitempty" dynamodbav:"IssuerCN,omitempty"`
-    IssuerOrg             []string           `json:"issuerOrg,omitempty" dynamodbav:"IssuerOrg,omitempty"`
-    FingerprintHash       map[string]string  `json:"fingerprintHash,omitempty" dynamodbav:"FingerprintHash,omitempty"`
-    TLSConnection         string             `json:"tlsConnection,omitempty" dynamodbav:"TLSConnection,omitempty"`
+    Version          string             `json:"tls_version,omitempty" dynamodbav:"Version"`
+    Cipher           string             `json:"cipher,omitempty" dynamodbav:"Cipher"`
+    Expired          bool               `json:"expired,omitempty" dynamodbav:"Expired"`
+    SelfSigned       bool               `json:"self_signed,omitempty" dynamodbav:"SelfSigned"`
+    Mismatched       bool               `json:"mismatched,omitempty" dynamodbav:"Mismatched"`
+    NotBefore        string             `json:"not_before,omitempty" dynamodbav:"NotBefore"`
+    NotAfter         string             `json:"not_after,omitempty" dynamodbav:"NotAfter"`
+    SubjectDN        string             `json:"subject_dn,omitempty" dynamodbav:"SubjectDN"`
+    SubjectCN        string             `json:"subject_cn,omitempty" dynamodbav:"SubjectCN"`
+    SubjectOrg       []string           `json:"subject_org,omitempty" dynamodbav:"SubjectOrg"`
+    SubjectAN        []string           `json:"subject_an,omitempty" dynamodbav:"SubjectAN"`
+    Serial           string             `json:"serial,omitempty" dynamodbav:"Serial"`
+    IssuerDN         string             `json:"issuer_dn,omitempty" dynamodbav:"IssuerDN"`
+    IssuerCN         string             `json:"issuer_cn,omitempty" dynamodbav:"IssuerCN"`
+    IssuerOrg        []string           `json:"issuer_org,omitempty" dynamodbav:"IssuerOrg"`
+    FingerprintHash  map[string]string  `json:"fingerprint_hash,omitempty" dynamodbav:"FingerprintHash"`
+    TLSConnection    string             `json:"tls_connection,omitempty" dynamodbav:"TLSConnection"`
+    Host             string             `json:"host,omitempty" dynamodbav:"Host"`
+    Port             string             `json:"port,omitempty" dynamodbav:"Port"`
+    ProbeStatus      bool               `json:"probe_status,omitempty" dynamodbav:"ProbeStatus"`
 }
 
 // GetEnrichmentResults retrieves enrichment results for an IP
